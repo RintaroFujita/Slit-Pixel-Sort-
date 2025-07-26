@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slit Scan Effect Generator</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>Slit Scan Effect Generator</h1>
+            <p class="subtitle">Create stunning visual effects for your images and videos</p>
+        </header>
+        
+        <div class="upload-section">
+                            <div class="upload-area" id="uploadArea">
+                    <div class="upload-icon">📁</div>
+                    <h3>Upload Media</h3>
+                    <p>Drag and drop your image or video file here, or click to browse</p>
+                    <p class="file-info">Supported formats: MP4, WebM, MOV, AVI, GIF, JPG, PNG</p>
+                    <p class="file-info">Note: MOV files may not work in all browsers. For best compatibility, convert to MP4 format.</p>
+                    <p class="file-info">Video output: MP4 format is recommended for best compatibility across devices and platforms.</p>
+                    <p class="file-info">Quality: Higher bitrate settings produce better video quality but larger file sizes.</p>
+                    <input type="file" id="imageInput" accept="image/*,video/*" />
+                    <button id="uploadBtn" class="upload-button">Choose File</button>
+                </div>
+        </div>
+
+        <div class="controls">
+            <div class="controls-header">
+                <h2>Effect Controls</h2>
+                <p>Customize your visual effects</p>
+            </div>
+            
+            <div class="controls-grid">
+                <div class="control-group">
+                    <label for="effectType">Effect Type</label>
+                    <select id="effectType" class="select-control">
+                        <option value="slit-scan">Slit Scan</option>
+                        <option value="pixel-sort">Pixel Sort</option>
+                        <option value="glitch">Glitch Effect</option>
+                        <option value="combined">Combined</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label for="intensity">Intensity</label>
+                    <div class="slider-container">
+                        <input type="range" id="intensity" min="0" max="100" value="50" class="slider">
+                        <span id="intensityValue" class="slider-value">50</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label for="direction">Direction</label>
+                    <select id="direction" class="select-control">
+                        <option value="vertical">Vertical</option>
+                        <option value="horizontal">Horizontal</option>
+                        <option value="diagonal">Diagonal</option>
+                        <option value="radial">Radial</option>
+                        <option value="wave">Wave</option>
+                        <option value="spiral">Spiral</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label for="stretchType">Stretch Type</label>
+                    <select id="stretchType" class="select-control">
+                        <option value="uniform">Uniform</option>
+                        <option value="gradient">Gradient</option>
+                        <option value="random">Random</option>
+                        <option value="center">From Center</option>
+                        <option value="edges">From Edges</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label for="stretchAmount">Stretch Amount</label>
+                    <div class="slider-container">
+                        <input type="range" id="stretchAmount" min="0" max="200" value="100" class="slider">
+                        <span id="stretchAmountValue" class="slider-value">100</span>
+                    </div>
+                </div>
+
+                            <div class="control-group">
+                <label for="speed">Animation Speed</label>
+                <div class="slider-container">
+                    <input type="range" id="speed" min="1" max="100" value="30" class="slider">
+                    <span id="speedValue" class="slider-value">30</span>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label for="autoMode">Auto Mode</label>
+                <div class="toggle-container">
+                    <input type="checkbox" id="autoMode" class="toggle-switch">
+                    <label for="autoMode" class="toggle-label">Auto Animation</label>
+                    <div id="autoStatus" class="auto-status" style="display: none;">
+                        <span class="auto-indicator"></span>
+                        <span class="auto-text">Running</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label for="autoSpeed">Auto Speed</label>
+                <div class="slider-container">
+                    <input type="range" id="autoSpeed" min="1" max="100" value="50" class="slider">
+                    <span id="autoSpeedValue" class="slider-value">50</span>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label>Auto Parameters</label>
+                <div class="auto-params">
+                    <div class="auto-param-item">
+                        <input type="checkbox" id="autoIntensity" class="auto-checkbox" checked>
+                        <label for="autoIntensity">Intensity</label>
+                    </div>
+                    <div class="auto-param-item">
+                        <input type="checkbox" id="autoStretch" class="auto-checkbox" checked>
+                        <label for="autoStretch">Stretch Amount</label>
+                    </div>
+                    <div class="auto-param-item">
+                        <input type="checkbox" id="autoEffect" class="auto-checkbox" disabled>
+                        <label for="autoEffect" style="color: var(--text-muted);">Effect Type (Disabled)</label>
+                    </div>
+                    <div class="auto-param-item">
+                        <input type="checkbox" id="autoDirection" class="auto-checkbox" disabled>
+                        <label for="autoDirection" style="color: var(--text-muted);">Direction (Disabled)</label>
+                    </div>
+                    <div class="auto-param-item">
+                        <input type="checkbox" id="autoStretchType" class="auto-checkbox" disabled>
+                        <label for="autoStretchType" style="color: var(--text-muted);">Stretch Type (Disabled)</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label for="videoFormat">Video Output Format</label>
+                <select id="videoFormat" class="select-control">
+                    <option value="auto">Auto (Best Available)</option>
+                    <option value="mp4">MP4 (H.264)</option>
+                    <option value="webm">WebM (VP9)</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label for="videoQuality">Video Quality</label>
+                <select id="videoQuality" class="select-control">
+                    <option value="high">Ultra High Quality (20 Mbps)</option>
+                    <option value="medium">High Quality (12 Mbps)</option>
+                    <option value="low">Medium Quality (6 Mbps)</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label for="recordingDuration">Recording Duration (Image)</label>
+                <div class="slider-container">
+                    <input type="range" id="recordingDuration" min="5" max="30" value="10" class="slider">
+                    <span id="recordingDurationValue" class="slider-value">10s</span>
+                </div>
+            </div>
+            </div>
+
+            <div class="action-buttons">
+                <button id="applyEffect" class="btn btn-primary">Apply Effect</button>
+                <button id="downloadBtn" class="btn btn-secondary">Download Result</button>
+                <div id="recordingStatus" class="recording-status" style="display: none;">
+                    <div class="recording-indicator"></div>
+                    <span>Recording video...</span>
+                </div>
+                <div id="loadingStatus" class="loading-status" style="display: none;">
+                    <div class="loading-spinner"></div>
+                    <span>Loading video...</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="canvas-container">
+            <div class="canvas-header">
+                <h3>Preview</h3>
+                <div class="canvas-controls">
+                    <button id="resetBtn" class="btn btn-small">Reset</button>
+                </div>
+            </div>
+            <div class="canvas-wrapper">
+                <canvas id="sourceCanvas" style="display: none;"></canvas>
+                <canvas id="outputCanvas"></canvas>
+                <video id="videoPreview" style="display: none;"></video>
+            </div>
+        </div>
+
+        <div class="info">
+            <h3>How to Use</h3>
+            <div class="steps">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <div class="step-content">
+                        <h4>Upload Media</h4>
+                        <p>Upload an image or video file to get started</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <div class="step-content">
+                        <h4>Choose Effect</h4>
+                        <p>Select the type of visual effect you want to apply</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <div class="step-content">
+                        <h4>Adjust Settings</h4>
+                        <p>Fine-tune the intensity, direction, and other parameters</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-number">4</div>
+                    <div class="step-content">
+                        <h4>Apply & Download</h4>
+                        <p>Apply the effect and download your result</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html> 
