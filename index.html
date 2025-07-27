@@ -6,6 +6,7 @@
     <title>Slit Scan Effect Generator</title>
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -139,24 +140,6 @@
             </div>
 
             <div class="control-group">
-                <label for="videoFormat">Video Output Format</label>
-                <select id="videoFormat" class="select-control">
-                    <option value="auto">Auto (Best Available)</option>
-                    <option value="mp4">MP4 (H.264)</option>
-                    <option value="webm">WebM (VP9)</option>
-                </select>
-            </div>
-
-            <div class="control-group">
-                <label for="videoQuality">Video Quality</label>
-                <select id="videoQuality" class="select-control">
-                    <option value="high">Ultra High Quality (20 Mbps)</option>
-                    <option value="medium">High Quality (12 Mbps)</option>
-                    <option value="low">Medium Quality (6 Mbps)</option>
-                </select>
-            </div>
-
-            <div class="control-group">
                 <label for="recordingDuration">Recording Duration (Image)</label>
                 <div class="slider-container">
                     <input type="range" id="recordingDuration" min="5" max="30" value="10" class="slider">
@@ -170,7 +153,7 @@
                 <button id="downloadBtn" class="btn btn-secondary">Download Result</button>
                 <div id="recordingStatus" class="recording-status" style="display: none;">
                     <div class="recording-indicator"></div>
-                    <span>Recording video...</span>
+                    <span>Recording frames...</span>
                 </div>
                 <div id="loadingStatus" class="loading-status" style="display: none;">
                     <div class="loading-spinner"></div>
@@ -183,6 +166,7 @@
             <div class="canvas-header">
                 <h3>Preview</h3>
                 <div class="canvas-controls">
+                    <button id="popupBtn" class="btn btn-small btn-popup">Popup Canvas</button>
                     <button id="resetBtn" class="btn btn-small">Reset</button>
                 </div>
             </div>
@@ -221,7 +205,7 @@
                     <div class="step-number">4</div>
                     <div class="step-content">
                         <h4>Apply & Download</h4>
-                        <p>Apply the effect and download your result</p>
+                        <p>Apply the effect and download as WebM/MP4 video or PNG frames</p>
                     </div>
                 </div>
             </div>
@@ -229,5 +213,18 @@
     </div>
 
     <script src="script.js"></script>
+    <!-- Web Worker for CPU-intensive processing -->
+    <script>
+        // Web Worker のサポート確認
+        if (typeof Worker !== 'undefined') {
+            console.log('Web Workers supported');
+        } else {
+            console.warn('Web Workers not supported');
+        }
+        
+        // ハードウェア情報の表示
+        console.log(`CPU Cores: ${navigator.hardwareConcurrency || 'Unknown'}`);
+        console.log(`User Agent: ${navigator.userAgent}`);
+    </script>
 </body>
 </html> 

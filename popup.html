@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Canvas Popup</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #000000;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            cursor: none;
+        }
+        
+        #popupCanvas {
+            max-width: 100vw;
+            max-height: 100vh;
+            object-fit: contain;
+        }
+        
+        /* フルスクリーン時のスタイル */
+        :fullscreen #popupCanvas {
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+        }
+        
+        :-webkit-full-screen #popupCanvas {
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+        }
+        
+        :-ms-fullscreen #popupCanvas {
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+        }
+        
+        .controls {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            gap: 5px;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            z-index: 1000;
+        }
+        
+        body:hover .controls {
+            opacity: 1;
+        }
+        
+        /* フルスクリーン時のコントロール */
+        :fullscreen .controls {
+            top: 20px;
+            right: 20px;
+        }
+        
+        :-webkit-full-screen .controls {
+            top: 20px;
+            right: 20px;
+        }
+        
+        :-ms-fullscreen .controls {
+            top: 20px;
+            right: 20px;
+        }
+        
+        .btn {
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .btn:hover {
+            background: rgba(0, 0, 0, 0.9);
+        }
+        
+        .btn-close {
+            background: rgba(220, 53, 69, 0.8);
+        }
+        
+        .btn-close:hover {
+            background: rgba(220, 53, 69, 1);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="popupCanvas"></canvas>
+    
+    <div class="controls">
+        <button id="fullscreenBtn" class="btn">⛶</button>
+        <button id="closeBtn" class="btn btn-close">✕</button>
+    </div>
+    
+    <script>
+        let popupCanvas, popupCtx;
+        let refreshInterval;
+        let animationId;
+        let isFullscreen = false;
+        
+        // 初期化
+        function init() {
+            popupCanvas = document.getElementById('popupCanvas');
+            popupCtx = popupCanvas.getContext('2d');
+            
+            // キャンバスサイズを設定
+            updateCanvasSize();
+            
+            // イベントリスナーを設定
+            setupEventListeners();
+            
+            // 定期的にキャンバスを更新
+            startRefresh();
+        }
+        
+        // キャンバスサイズを更新
+        function updateCanvasSize() {
+            if (window.opener && window.opener.slitScanEffect) {
+                const mainCanvas = window.opener.slitScanEffect.outputCanvas;
+                const aspectRatio = mainCanvas.width / mainCanvas.height;
+                
+                let newWidth, newHeight;
+                
+                if (isFullscreen) {
+                    // フルスクリーン時は画面全体を使用
+                    if (aspectRatio > 1) {
+                        // 横長
+                        newWidth = window.innerWidth;
+                        newHeight = newWidth / aspectRatio;
+                        
+                        if (newHeight > window.innerHeight) {
+                            newHeight = window.innerHeight;
+                            newWidth = newHeight * aspectRatio;
+                        }
+                    } else {
+                        // 縦長
+                        newHeight = window.innerHeight;
+                        newWidth = newHeight * aspectRatio;
+                        
+                        if (newWidth > window.innerWidth) {
+                            newWidth = window.innerWidth;
+                            newHeight = newWidth / aspectRatio;
+                        }
+                    }
+                } else {
+                    // 通常時
+                    if (aspectRatio > 1) {
+                        // 横長
+                        newWidth = Math.min(window.innerWidth - 20, mainCanvas.width);
+                        newHeight = newWidth / aspectRatio;
+                    } else {
+                        // 縦長
+                        newHeight = Math.min(window.innerHeight - 20, mainCanvas.height);
+                        newWidth = newHeight * aspectRatio;
+                    }
+                }
+                
+                popupCanvas.width = newWidth;
+                popupCanvas.height = newHeight;
+            }
+        }
+        
+        // キャンバスを更新
+        function updateCanvas() {
+            if (window.opener && window.opener.slitScanEffect) {
+                const mainCanvas = window.opener.slitScanEffect.outputCanvas;
+                
+                // キャンバスが有効かチェック
+                if (mainCanvas && mainCanvas.width > 0 && mainCanvas.height > 0) {
+                    try {
+                        popupCtx.clearRect(0, 0, popupCanvas.width, popupCanvas.height);
+                        popupCtx.drawImage(mainCanvas, 0, 0, popupCanvas.width, popupCanvas.height);
+                    } catch (error) {
+                        console.warn('Canvas drawing error:', error);
+                    }
+                }
+            }
+        }
+        
+        // イベントリスナーを設定
+        function setupEventListeners() {
+            // フルスクリーンボタン
+            document.getElementById('fullscreenBtn').addEventListener('click', toggleFullscreen);
+            
+            // 閉じるボタン
+            document.getElementById('closeBtn').addEventListener('click', () => {
+                window.close();
+            });
+            
+            // ウィンドウリサイズ
+            window.addEventListener('resize', () => {
+                updateCanvasSize();
+                updateCanvas();
+            });
+            
+            // フルスクリーン状態の変更を監視
+            document.addEventListener('fullscreenchange', handleFullscreenChange);
+            document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+            document.addEventListener('msfullscreenchange', handleFullscreenChange);
+            
+            // キーボードショートカット
+            document.addEventListener('keydown', (e) => {
+                switch(e.key) {
+                    case 'Escape':
+                        if (isFullscreen) {
+                            toggleFullscreen();
+                        } else {
+                            window.close();
+                        }
+                        break;
+                    case 'F11':
+                    case 'f':
+                        toggleFullscreen();
+                        break;
+                }
+            });
+        }
+        
+        // フルスクリーン切り替え
+        function toggleFullscreen() {
+            if (!isFullscreen) {
+                if (document.documentElement.requestFullscreen) {
+                    document.documentElement.requestFullscreen();
+                } else if (document.documentElement.webkitRequestFullscreen) {
+                    document.documentElement.webkitRequestFullscreen();
+                } else if (document.documentElement.msRequestFullscreen) {
+                    document.documentElement.msRequestFullscreen();
+                }
+                isFullscreen = true;
+            } else {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) {
+                    document.webkitExitFullscreen();
+                } else if (document.msExitFullscreen) {
+                    document.msExitFullscreen();
+                }
+                isFullscreen = false;
+            }
+        }
+        
+        // フルスクリーン状態の変更を監視
+        function handleFullscreenChange() {
+            const isCurrentlyFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
+            
+            if (isCurrentlyFullscreen !== isFullscreen) {
+                isFullscreen = isCurrentlyFullscreen;
+                
+                // 現在の更新を停止
+                stopRefresh();
+                
+                // フルスクリーン状態が変わったら更新を再開
+                setTimeout(() => {
+                    updateCanvasSize();
+                    updateCanvas();
+                    startRefresh();
+                }, isFullscreen ? 300 : 100);
+            }
+        }
+        
+        // 定期的な更新を開始
+        function startRefresh() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+            
+            // フルスクリーン時はrequestAnimationFrameを使用
+            if (isFullscreen) {
+                function animate() {
+                    if (isFullscreen) {
+                        try {
+                            updateCanvas();
+                        } catch (error) {
+                            console.warn('Canvas update error:', error);
+                        }
+                        animationId = requestAnimationFrame(animate);
+                    }
+                }
+                animate();
+            } else {
+                // 通常時はsetIntervalを使用
+                refreshInterval = setInterval(() => {
+                    try {
+                        updateCanvas();
+                    } catch (error) {
+                        console.warn('Canvas update error:', error);
+                        // エラーが発生した場合は更新を再開
+                        stopRefresh();
+                        setTimeout(() => {
+                            startRefresh();
+                        }, 1000);
+                    }
+                }, 1000 / 60); // 60FPS for smoother animation
+            }
+        }
+        
+        // 定期的な更新を停止
+        function stopRefresh() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            }
+        }
+        
+        // ページ読み込み時に初期化
+        document.addEventListener('DOMContentLoaded', init);
+        
+        // ページアンロード時にクリーンアップ
+        window.addEventListener('beforeunload', () => {
+            stopRefresh();
+        });
+        
+        // 親ウィンドウとの通信
+        window.addEventListener('message', (event) => {
+            if (event.data.type === 'updateCanvas') {
+                updateCanvas();
+            } else if (event.data.type === 'updateSize') {
+                updateCanvasSize();
+            }
+        });
+    </script>
+</body>
+</html> 

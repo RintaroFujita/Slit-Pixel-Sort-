@@ -429,6 +429,17 @@ body {
     background: var(--border);
 }
 
+.btn-popup {
+    background: linear-gradient(135deg, #10b981, #059669);
+    color: white;
+    border: none;
+}
+
+.btn-popup:hover {
+    background: linear-gradient(135deg, #059669, #047857);
+    transform: translateY(-1px);
+}
+
 /* Recording Status */
 .recording-status {
     display: flex;

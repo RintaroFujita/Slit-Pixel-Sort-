@@ -4,6 +4,8 @@ class SlitScanEffect {
         this.outputCanvas = document.getElementById('outputCanvas');
         this.videoPreview = document.getElementById('videoPreview');
         this.sourceCtx = this.sourceCanvas.getContext('2d');
+        
+        // 基本的な2Dコンテキストを先に初期化
         this.outputCtx = this.outputCanvas.getContext('2d');
         
         this.isVideo = false;
@@ -29,17 +31,334 @@ class SlitScanEffect {
         this.lastRecordingFrameTime = 0;
         this.lastAnimateFrameTime = 0;
         
+        // パフォーマンス監視
+        this.frameCount = 0;
+        this.lastPerformanceCheck = performance.now();
+        this.fpsHistory = [];
+        
+        // ポップアップウィンドウ関連
+        this.popupWindow = null;
+        this.popupUpdateInterval = null;
+        
+        // 高度な機能の初期化（エラーが発生しても基本機能は動作）
+        try {
+            // WebGL GPU レンダリングの初期化
+            this.initWebGL();
+        } catch (error) {
+            console.warn('WebGL initialization failed, using 2D canvas only:', error);
+            this.useWebGL = false;
+        }
+        
+        try {
+            // Web Worker の初期化
+            this.initWebWorkers();
+        } catch (error) {
+            console.warn('Web Workers initialization failed, using single-threaded processing:', error);
+            this.useWorkers = false;
+        }
+        
+        // DOM要素の存在確認
+        console.log('Checking DOM elements...');
+        console.log('uploadBtn:', document.getElementById('uploadBtn'));
+        console.log('imageInput:', document.getElementById('imageInput'));
+        console.log('uploadArea:', document.getElementById('uploadArea'));
+        
         this.setupEventListeners();
     }
 
-    setupEventListeners() {
-        document.getElementById('uploadBtn').addEventListener('click', () => {
-            document.getElementById('imageInput').click();
-        });
+    initWebGL() {
+        try {
+            console.log('Initializing WebGL...');
+            
+            // WebGLコンテキストの作成（高パフォーマンス設定）
+            this.gl = this.outputCanvas.getContext('webgl2', {
+                alpha: false,
+                antialias: true,
+                depth: false,
+                stencil: false,
+                preserveDrawingBuffer: false,
+                powerPreference: 'high-performance'
+            }) || this.outputCanvas.getContext('webgl', {
+                alpha: false,
+                antialias: true,
+                depth: false,
+                stencil: false,
+                preserveDrawingBuffer: false,
+                powerPreference: 'high-performance'
+            });
+            
+            if (this.gl) {
+                console.log('WebGL GPU acceleration enabled');
+                console.log('WebGL Version:', this.gl.getParameter(this.gl.VERSION));
+                console.log('WebGL Vendor:', this.gl.getParameter(this.gl.VENDOR));
+                console.log('WebGL Renderer:', this.gl.getParameter(this.gl.RENDERER));
+                this.useWebGL = true;
+                this.setupWebGLShaders();
+            } else {
+                console.log('WebGL not available, using 2D canvas');
+                this.useWebGL = false;
+            }
+        } catch (error) {
+            console.warn('WebGL initialization failed:', error);
+            this.useWebGL = false;
+        }
+    }
+    
+    setupWebGLShaders() {
+        try {
+            // 頂点シェーダー
+            const vertexShaderSource = `
+                attribute vec2 a_position;
+                attribute vec2 a_texCoord;
+                varying vec2 v_texCoord;
+                
+                void main() {
+                    gl_Position = vec4(a_position, 0.0, 1.0);
+                    v_texCoord = a_texCoord;
+                }
+            `;
+            
+            // フラグメントシェーダー（スリットスキャン効果）
+            const fragmentShaderSource = `
+                precision mediump float;
+                uniform sampler2D u_image;
+                uniform vec2 u_resolution;
+                uniform float u_intensity;
+                uniform float u_time;
+                
+                varying vec2 v_texCoord;
+                
+                void main() {
+                    vec2 uv = v_texCoord;
+                    vec2 center = vec2(0.5);
+                    
+                    // スリットスキャン効果
+                    float offset = u_intensity * 0.1;
+                    vec2 distorted = uv;
+                    
+                    // 水平方向の歪み
+                    distorted.x += sin(uv.y * 10.0 + u_time) * offset;
+                    
+                    // 垂直方向の歪み
+                    distorted.y += sin(uv.x * 10.0 + u_time) * offset;
+                    
+                    // 放射状の歪み
+                    float dist = distance(uv, center);
+                    float angle = atan(uv.y - center.y, uv.x - center.x);
+                    distorted = center + vec2(cos(angle + sin(dist * 5.0 + u_time) * offset),
+                                            sin(angle + sin(dist * 5.0 + u_time) * offset)) * dist;
+                    
+                    // テクスチャサンプリング
+                    gl_FragColor = texture2D(u_image, distorted);
+                }
+            `;
+            
+            // シェーダーのコンパイル
+            this.vertexShader = this.createShader(this.gl.VERTEX_SHADER, vertexShaderSource);
+            this.fragmentShader = this.createShader(this.gl.FRAGMENT_SHADER, fragmentShaderSource);
+            
+            if (!this.vertexShader || !this.fragmentShader) {
+                throw new Error('Shader compilation failed');
+            }
+            
+            // プログラムの作成
+            this.program = this.createProgram(this.vertexShader, this.fragmentShader);
+            
+            if (!this.program) {
+                throw new Error('Program linking failed');
+            }
+            
+            // 属性とユニフォームの位置を取得
+            this.positionLocation = this.gl.getAttribLocation(this.program, 'a_position');
+            this.texCoordLocation = this.gl.getAttribLocation(this.program, 'a_texCoord');
+            this.imageLocation = this.gl.getUniformLocation(this.program, 'u_image');
+            this.resolutionLocation = this.gl.getUniformLocation(this.program, 'u_resolution');
+            this.intensityLocation = this.gl.getUniformLocation(this.program, 'u_intensity');
+            this.timeLocation = this.gl.getUniformLocation(this.program, 'u_time');
+            
+            // テクスチャの作成
+            this.texture = this.gl.createTexture();
+            this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+            this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.CLAMP_TO_EDGE);
+            this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
+            this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.gl.LINEAR);
+            this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, this.gl.LINEAR);
+            
+            // バッファの作成
+            this.positionBuffer = this.gl.createBuffer();
+            this.texCoordBuffer = this.gl.createBuffer();
+            
+            // 四角形の頂点データ
+            const positions = [
+                -1, -1,
+                 1, -1,
+                -1,  1,
+                 1,  1,
+            ];
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.positionBuffer);
+            this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(positions), this.gl.STATIC_DRAW);
+            
+            // テクスチャ座標
+            const texCoords = [
+                0, 1,
+                1, 1,
+                0, 0,
+                1, 0,
+            ];
+            this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.texCoordBuffer);
+            this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(texCoords), this.gl.STATIC_DRAW);
+            
+            console.log('WebGL shaders setup completed successfully');
+        } catch (error) {
+            console.error('WebGL shaders setup failed:', error);
+            this.useWebGL = false;
+        }
+    }
+    
+    createShader(type, source) {
+        const shader = this.gl.createShader(type);
+        this.gl.shaderSource(shader, source);
+        this.gl.compileShader(shader);
+        
+        if (!this.gl.getShaderParameter(shader, this.gl.COMPILE_STATUS)) {
+            console.error('Shader compilation error:', this.gl.getShaderInfoLog(shader));
+            this.gl.deleteShader(shader);
+            return null;
+        }
+        return shader;
+    }
+    
+    createProgram(vertexShader, fragmentShader) {
+        const program = this.gl.createProgram();
+        this.gl.attachShader(program, vertexShader);
+        this.gl.attachShader(program, fragmentShader);
+        this.gl.linkProgram(program);
+        
+        if (!this.gl.getProgramParameter(program, this.gl.LINK_STATUS)) {
+            console.error('Program linking error:', this.gl.getProgramInfoLog(program));
+            this.gl.deleteProgram(program);
+            return null;
+        }
+        return program;
+    }
+    
+    initWebWorkers() {
+        try {
+            // Web Workers のサポート確認
+            if (typeof Worker === 'undefined') {
+                throw new Error('Web Workers not supported');
+            }
+            
+            // CPU コア数に基づいてワーカー数を決定
+            const cpuCores = navigator.hardwareConcurrency || 4;
+            this.workerCount = Math.min(cpuCores, 4); // 最大4個まで（安全のため）
+            this.workers = [];
+            this.workerQueue = [];
+            this.activeWorkers = 0;
+            
+            console.log(`Initializing ${this.workerCount} Web Workers for CPU cores: ${cpuCores}`);
+            
+            for (let i = 0; i < this.workerCount; i++) {
+                try {
+                    const worker = new Worker('worker.js');
+                    worker.onmessage = (e) => this.handleWorkerMessage(e, i);
+                    worker.onerror = (error) => {
+                        console.error(`Worker ${i} error:`, error);
+                        this.useWorkers = false;
+                    };
+                    this.workers.push(worker);
+                } catch (workerError) {
+                    console.warn(`Failed to create worker ${i}:`, workerError);
+                    // ワーカーの作成に失敗した場合は、残りのワーカーで続行
+                    continue;
+                }
+            }
+            
+            // 少なくとも1つのワーカーが作成できた場合のみ有効化
+            if (this.workers.length === 0) {
+                throw new Error('No workers could be created');
+            }
+            
+            this.useWorkers = true;
+        } catch (error) {
+            console.warn('Web Workers not available:', error);
+            this.useWorkers = false;
+        }
+    }
+    
+    handleWorkerMessage(e, workerId) {
+        const { type, data } = e.data;
+        
+        if (type.endsWith('-result')) {
+            // ワーカー処理完了
+            this.activeWorkers--;
+            
+            // 結果をキャンバスに適用
+            const imageData = new ImageData(data, this.outputCanvas.width, this.outputCanvas.height);
+            this.outputCtx.putImageData(imageData, 0, 0);
+            
+            // 次のタスクを処理
+            this.processWorkerQueue();
+        }
+    }
+    
+    processWorkerQueue() {
+        if (this.workerQueue.length > 0 && this.activeWorkers < this.workerCount) {
+            const task = this.workerQueue.shift();
+            const availableWorker = this.workers.find(w => !w.busy);
+            
+            if (availableWorker) {
+                availableWorker.busy = true;
+                this.activeWorkers++;
+                availableWorker.postMessage(task);
+            }
+        }
+    }
+    
+    processWithWorkers(imageData, effectType, intensity, direction, stretchType, stretchAmount) {
+        if (!this.useWorkers || this.workers.length === 0) {
+            return false; // ワーカーが利用できない場合は false を返す
+        }
+        
+        const data = imageData.data;
+        const width = imageData.width;
+        const height = imageData.height;
+        
+        // ワーカーにタスクを送信
+        const task = {
+            type: effectType,
+            data: data,
+            width: width,
+            height: height,
+            intensity: intensity,
+            direction: direction,
+            stretchType: stretchType,
+            stretchAmount: stretchAmount
+        };
+        
+        this.workerQueue.push(task);
+        this.processWorkerQueue();
+        
+        return true; // ワーカー処理を開始した場合は true を返す
+    }
 
-        document.getElementById('imageInput').addEventListener('change', (e) => {
-            this.handleFileUpload(e.target.files[0]);
-        });
+    setupEventListeners() {
+        // ファイル選択ボタン
+        const uploadBtn = document.getElementById('uploadBtn');
+        const imageInput = document.getElementById('imageInput');
+        
+        if (uploadBtn && imageInput) {
+            uploadBtn.addEventListener('click', () => {
+                imageInput.click();
+            });
+            imageInput.addEventListener('change', (e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                    this.handleFileUpload(e.target.files[0]);
+                }
+            });
+        } else {
+            console.error('Upload button element not found');
+        }
 
         document.getElementById('applyEffect').addEventListener('click', () => {
             this.applyEffect();
@@ -67,6 +386,14 @@ class SlitScanEffect {
         document.getElementById('downloadBtn').addEventListener('click', () => {
             this.downloadVideo();
         });
+
+        // ポップアップボタン
+        const popupBtn = document.getElementById('popupBtn');
+        if (popupBtn) {
+            popupBtn.addEventListener('click', () => {
+                this.openPopupWindow();
+            });
+        }
 
         // スライダーの値を表示
         document.getElementById('intensity').addEventListener('input', (e) => {
@@ -125,6 +452,35 @@ class SlitScanEffect {
             });
         });
 
+        // ドラッグ&ドロップ機能
+        const uploadArea = document.getElementById('uploadArea');
+        if (uploadArea) {
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.style.borderColor = '#4CAF50';
+                uploadArea.style.backgroundColor = 'rgba(76, 175, 80, 0.1)';
+                uploadArea.classList.add('dragover');
+            });
+            
+            uploadArea.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                uploadArea.style.borderColor = '#666';
+                uploadArea.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
+                uploadArea.classList.remove('dragover');
+            });
+            
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.style.borderColor = '#666';
+                uploadArea.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
+                uploadArea.classList.remove('dragover');
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    this.handleFileUpload(files[0]);
+                }
+            });
+        }
+        
         // ページクリック時の動画再生開始（一度だけ実行）
         let clickHandlerAdded = false;
         document.addEventListener('click', () => {
@@ -144,31 +500,33 @@ class SlitScanEffect {
             this.resetCanvas();
         });
 
-        // ドラッグ&ドロップ機能
-        const uploadArea = document.getElementById('uploadArea');
-        
-        uploadArea.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            uploadArea.classList.add('dragover');
-        });
-        
-        uploadArea.addEventListener('dragleave', () => {
-            uploadArea.classList.remove('dragover');
-        });
-        
-        uploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadArea.classList.remove('dragover');
+        // ドラッグ&ドロップ機能の統合
+        if (uploadArea) {
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.style.borderColor = '#4CAF50';
+                uploadArea.style.backgroundColor = 'rgba(76, 175, 80, 0.1)';
+                uploadArea.classList.add('dragover');
+            });
             
-            const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                this.handleFileUpload(files[0]);
-            }
-        });
-        
-        uploadArea.addEventListener('click', () => {
-            document.getElementById('imageInput').click();
-        });
+            uploadArea.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                uploadArea.style.borderColor = '#666';
+                uploadArea.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
+                uploadArea.classList.remove('dragover');
+            });
+            
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.style.borderColor = '#666';
+                uploadArea.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
+                uploadArea.classList.remove('dragover');
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    this.handleFileUpload(files[0]);
+                }
+            });
+        }
     }
 
     handleFileUpload(file) {
@@ -228,18 +586,24 @@ class SlitScanEffect {
     }
 
     loadImage(src) {
+        console.log('loadImage called with src:', src);
         const img = new Image();
         img.onload = () => {
+            console.log('Image loaded successfully, dimensions:', img.width, 'x', img.height);
             this.isVideo = false;
             this.setupCanvasWithAspectRatio(img.width, img.height);
             this.sourceCtx.drawImage(img, 0, 0);
             this.outputCtx.drawImage(img, 0, 0);
             
+            console.log('Canvas setup completed, calling processFrame');
             // 静止画の場合、初期エフェクトを適用
             this.processFrame();
             
             // Hide video preview
             this.videoPreview.style.display = 'none';
+        };
+        img.onerror = (error) => {
+            console.error('Image loading error:', error);
         };
         img.src = src;
     }
@@ -471,6 +835,19 @@ class SlitScanEffect {
         this.sourceCanvas.height = height;
         this.outputCanvas.width = width;
         this.outputCanvas.height = height;
+        
+        // 基本的な2Dコンテキストを設定
+        this.outputCtx = this.outputCanvas.getContext('2d');
+        
+        // 高品質レンダリング設定
+        this.outputCtx.imageSmoothingEnabled = true;
+        this.outputCtx.imageSmoothingQuality = 'high';
+        
+        // パフォーマンス最適化設定
+        this.outputCtx.globalCompositeOperation = 'source-over';
+        this.outputCtx.globalAlpha = 1.0;
+        
+        console.log(`Canvas setup: ${width}x${height}`);
     }
 
     setupCanvasWithAspectRatio(width, height) {
@@ -542,6 +919,7 @@ class SlitScanEffect {
     }
 
     processFrame() {
+        console.log('processFrame called');
         // フレーム処理の制限（120FPS制限で高パフォーマンス）
         if (this.lastFrameTime && performance.now() - this.lastFrameTime < 8.33) {
             return; // 約120FPS制限
@@ -572,65 +950,166 @@ class SlitScanEffect {
             });
         }
 
-        const effectType = document.getElementById('effectType').value;
-        const intensity = parseInt(document.getElementById('intensity').value) / 100;
+        // エフェクトを適用
+        const intensity = parseInt(document.getElementById('intensity').value);
         const direction = document.getElementById('direction').value;
         const stretchType = document.getElementById('stretchType').value;
-        const stretchAmount = parseInt(document.getElementById('stretchAmount').value) / 100;
+        const stretchAmount = parseInt(document.getElementById('stretchAmount').value);
+        const effectType = document.getElementById('effectType').value;
 
-        // エフェクト適用前にキャンバスをクリア
-        this.outputCtx.clearRect(0, 0, this.outputCanvas.width, this.outputCanvas.height);
+        console.log('Effect parameters:', { intensity, direction, stretchType, stretchAmount, effectType });
+        console.log('WebGL status:', { useWebGL: this.useWebGL, gl: !!this.gl, program: !!this.program });
 
-        switch (effectType) {
-            case 'slit-scan':
+        // WebGLが利用可能な場合はGPUレンダリングを使用
+        if (this.useWebGL && this.gl && this.program) {
+            console.log('Using WebGL rendering');
+            this.renderWithWebGL(intensity, direction, stretchType, stretchAmount, effectType);
+        } else {
+            // フォールバック: 2Dキャンバスレンダリング
+            console.log('Using 2D canvas rendering');
+            this.renderWith2DCanvas(intensity, direction, stretchType, stretchAmount, effectType);
+        }
+
+        // パフォーマンス監視
+        this.frameCount++;
+        const now = performance.now();
+        if (now - this.lastPerformanceCheck >= 1000) {
+            const fps = this.frameCount / ((now - this.lastPerformanceCheck) / 1000);
+            this.fpsHistory.push(fps);
+            if (this.fpsHistory.length > 10) this.fpsHistory.shift();
+            
+            const avgFps = this.fpsHistory.reduce((a, b) => a + b, 0) / this.fpsHistory.length;
+            const memoryUsage = performance.memory ? 
+                `Memory: ${Math.round(performance.memory.usedJSHeapSize / 1024 / 1024)}MB / ${Math.round(performance.memory.totalJSHeapSize / 1024 / 1024)}MB` : 
+                'Memory: N/A';
+            
+            const renderer = this.useWebGL ? 'WebGL (GPU)' : '2D Canvas (CPU)';
+            console.log(`Performance: FPS: ${avgFps.toFixed(1)}, Renderer: ${renderer}, Workers: ${this.useWorkers} (${this.activeWorkers}/${this.workerCount}), ${memoryUsage}`);
+            
+            // パフォーマンス警告
+            if (avgFps < 30) {
+                console.warn('Low FPS detected. Consider reducing resolution or effect intensity.');
+            }
+            
+            this.frameCount = 0;
+            this.lastPerformanceCheck = now;
+        }
+    }
+    
+    renderWithWebGL(intensity, direction, stretchType, stretchAmount, effectType) {
+        try {
+            // WebGLレンダリング
+            this.gl.viewport(0, 0, this.outputCanvas.width, this.outputCanvas.height);
+            this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+            
+            // シェーダープログラムを使用
+            this.gl.useProgram(this.program);
+            
+            // テクスチャにソース画像をアップロード
+            this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+            this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.gl.RGBA, this.gl.UNSIGNED_BYTE, this.sourceCanvas);
+            
+            // ユニフォーム変数を設定
+            if (this.resolutionLocation) {
+                this.gl.uniform2f(this.resolutionLocation, this.outputCanvas.width, this.outputCanvas.height);
+            }
+            if (this.intensityLocation) {
+                this.gl.uniform1f(this.intensityLocation, intensity / 100.0);
+            }
+            if (this.timeLocation) {
+                this.gl.uniform1f(this.timeLocation, performance.now() * 0.001);
+            }
+            
+            // 頂点属性を設定
+            if (this.positionLocation !== -1) {
+                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.positionBuffer);
+                this.gl.enableVertexAttribArray(this.positionLocation);
+                this.gl.vertexAttribPointer(this.positionLocation, 2, this.gl.FLOAT, false, 0, 0);
+            }
+            
+            if (this.texCoordLocation !== -1) {
+                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.texCoordBuffer);
+                this.gl.enableVertexAttribArray(this.texCoordLocation);
+                this.gl.vertexAttribPointer(this.texCoordLocation, 2, this.gl.FLOAT, false, 0, 0);
+            }
+            
+            // 描画
+            this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
+            
+            console.log('WebGL rendering successful');
+        } catch (error) {
+            console.error('WebGL rendering failed, falling back to 2D canvas:', error);
+            this.useWebGL = false;
+            this.renderWith2DCanvas(intensity, direction, stretchType, stretchAmount, effectType);
+        }
+    }
+    
+    renderWith2DCanvas(intensity, direction, stretchType, stretchAmount, effectType) {
+        try {
+            console.log('renderWith2DCanvas called with:', { intensity, direction, stretchType, stretchAmount, effectType });
+            this.outputCtx.clearRect(0, 0, this.outputCanvas.width, this.outputCanvas.height);
+
+            if (effectType === 'slit-scan') {
+                console.log('Applying slit-scan effect');
                 this.applySlitScanEffect(intensity, direction, stretchType, stretchAmount);
-                break;
-            case 'pixel-sort':
+            } else if (effectType === 'pixel-sort') {
+                console.log('Applying pixel-sort effect');
                 this.applyPixelSortEffect(intensity, direction);
-                break;
-            case 'glitch':
+            } else if (effectType === 'glitch') {
+                console.log('Applying glitch effect');
                 this.applyGlitchEffect(intensity);
-                break;
-            case 'combined':
+            } else if (effectType === 'combined') {
+                console.log('Applying combined effect');
                 this.applyCombinedEffect(intensity, direction, stretchType, stretchAmount);
-                break;
+            } else {
+                console.log('Unknown effect type:', effectType);
+                this.outputCtx.drawImage(this.sourceCanvas, 0, 0);
+            }
+        } catch (error) {
+            console.error('2D canvas rendering error:', error);
+            this.outputCtx.drawImage(this.sourceCanvas, 0, 0);
         }
     }
 
     applySlitScanEffect(intensity, direction, stretchType, stretchAmount) {
+        try {
+                    console.log('applySlitScanEffect called with:', { intensity, direction, stretchType, stretchAmount });
         const imageData = this.sourceCtx.getImageData(0, 0, this.sourceCanvas.width, this.sourceCanvas.height);
-        const data = imageData.data;
-        const width = imageData.width;
-        const height = imageData.height;
+            const data = imageData.data;
+            const width = imageData.width;
+            const height = imageData.height;
+            
+            const outputData = new Uint8ClampedArray(data);
+            const centerX = width / 2;
+            const centerY = height / 2;
         
-        const outputData = new Uint8ClampedArray(data);
-        const centerX = width / 2;
-        const centerY = height / 2;
+        // 引き伸ばし量の計算（0-200の範囲を0-1の範囲に正規化、非線形マッピング）
+        const normalizedStretchAmount = Math.pow(stretchAmount / 200, 1.5); // 0-200 → 0-1（非線形）
+        console.log('Normalized stretch amount:', normalizedStretchAmount);
         
-        // 引き伸ばし量の計算
         const getStretchFactor = (x, y) => {
             switch (stretchType) {
                 case 'uniform':
-                    return stretchAmount;
+                    return normalizedStretchAmount;
                 case 'gradient':
-                    return stretchAmount * (x / width + y / height) / 2;
+                    return normalizedStretchAmount * (x / width + y / height) / 2;
                 case 'random':
-                    return stretchAmount * (0.5 + Math.random() * 0.5);
+                    return normalizedStretchAmount * (0.5 + Math.random() * 0.5);
                 case 'center':
                     const distance = Math.sqrt((x - centerX) ** 2 + (y - centerY) ** 2);
                     const maxDistance = Math.sqrt(centerX ** 2 + centerY ** 2);
-                    return stretchAmount * (1 - distance / maxDistance);
+                    return normalizedStretchAmount * (1 - distance / maxDistance);
                 case 'edges':
                     const edgeDistance = Math.min(x, y, width - x, height - y);
                     const maxEdgeDistance = Math.min(centerX, centerY);
-                    return stretchAmount * (edgeDistance / maxEdgeDistance);
+                    return normalizedStretchAmount * (edgeDistance / maxEdgeDistance);
                 default:
-                    return stretchAmount;
+                    return normalizedStretchAmount;
             }
         };
 
         if (direction === 'vertical') {
-            for (let x = 0; x < width; x++) {
+            for (let x = 0; x < width; x += Math.max(1, Math.floor(10 * intensity))) {
                 const stretchFactor = getStretchFactor(x, 0);
                 const waveOffset = Math.sin(x * 0.01 + this.currentFrame * 0.05) * intensity * 50;
                 
@@ -744,143 +1223,155 @@ class SlitScanEffect {
         this.outputCtx.putImageData(newImageData, 0, 0);
         
         this.currentFrame++;
+        console.log('applySlitScanEffect completed successfully');
+    } catch (error) {
+        console.error('Slit scan effect error:', error);
+        // エラーが発生した場合は、ソース画像をそのまま表示
+        this.outputCtx.drawImage(this.sourceCanvas, 0, 0);
     }
+}
 
-    applyPixelSortEffect(intensity, direction) {
-        const imageData = this.sourceCtx.getImageData(0, 0, this.sourceCanvas.width, this.sourceCanvas.height);
-        const data = imageData.data;
-        const width = imageData.width;
-        const height = imageData.height;
-        
-        const outputData = new Uint8ClampedArray(data);
-        const centerX = width / 2;
-        const centerY = height / 2;
-        
-        if (direction === 'vertical') {
-            for (let x = 0; x < width; x += Math.max(1, Math.floor(10 * intensity))) {
-                const column = [];
-                for (let y = 0; y < height; y++) {
-                    const index = (y * width + x) * 4;
-                    column.push({
-                        r: data[index],
-                        g: data[index + 1],
-                        b: data[index + 2],
-                        a: data[index + 3]
-                    });
-                }
-                
-                // 複数のソート方法
-                const sortMethod = Math.floor(this.currentFrame / 30) % 4;
-                switch (sortMethod) {
-                    case 0: // 明度でソート
-                        column.sort((a, b) => {
-                            const brightnessA = (a.r + a.g + a.b) / 3;
-                            const brightnessB = (b.r + b.g + b.b) / 3;
-                            return brightnessA - brightnessB;
-                        });
-                        break;
-                    case 1: // 色相でソート
-                        column.sort((a, b) => {
-                            const hueA = this.getHue(a.r, a.g, a.b);
-                            const hueB = this.getHue(b.r, b.g, b.b);
-                            return hueA - hueB;
-                        });
-                        break;
-                    case 2: // 彩度でソート
-                        column.sort((a, b) => {
-                            const satA = this.getSaturation(a.r, a.g, a.b);
-                            const satB = this.getSaturation(b.r, b.g, b.b);
-                            return satA - satB;
-                        });
-                        break;
-                    case 3: // ランダムソート
-                        for (let i = column.length - 1; i > 0; i--) {
-                            const j = Math.floor(Math.random() * (i + 1));
-                            [column[i], column[j]] = [column[j], column[i]];
-                        }
-                        break;
-                }
-                
-                for (let y = 0; y < height; y++) {
-                    const index = (y * width + x) * 4;
-                    outputData[index] = column[y].r;
-                    outputData[index + 1] = column[y].g;
-                    outputData[index + 2] = column[y].b;
-                    outputData[index + 3] = column[y].a;
-                }
-            }
-        } else if (direction === 'horizontal') {
-            for (let y = 0; y < height; y += Math.max(1, Math.floor(10 * intensity))) {
-                const row = [];
-                for (let x = 0; x < width; x++) {
-                    const index = (y * width + x) * 4;
-                    row.push({
-                        r: data[index],
-                        g: data[index + 1],
-                        b: data[index + 2],
-                        a: data[index + 3]
-                    });
-                }
-                
-                // 明度でソート
-                row.sort((a, b) => {
-                    const brightnessA = (a.r + a.g + a.b) / 3;
-                    const brightnessB = (b.r + b.g + b.b) / 3;
-                    return brightnessA - brightnessB;
-                });
-                
-                for (let x = 0; x < width; x++) {
-                    const index = (y * width + x) * 4;
-                    outputData[index] = row[x].r;
-                    outputData[index + 1] = row[x].g;
-                    outputData[index + 2] = row[x].b;
-                    outputData[index + 3] = row[x].a;
-                }
-            }
-        } else if (direction === 'radial') {
-            // 放射状のピクセルソート
-            for (let angle = 0; angle < 360; angle += 5) {
-                const rad = angle * Math.PI / 180;
-                const pixels = [];
-                
-                for (let r = 0; r < Math.max(width, height); r++) {
-                    const x = centerX + Math.cos(rad) * r;
-                    const y = centerY + Math.sin(rad) * r;
-                    
-                    if (x >= 0 && x < width && y >= 0 && y < height) {
-                        const index = (Math.floor(y) * width + Math.floor(x)) * 4;
-                        pixels.push({
+applyPixelSortEffect(intensity, direction) {
+    try {
+            const imageData = this.sourceCtx.getImageData(0, 0, this.sourceCanvas.width, this.sourceCanvas.height);
+            const data = imageData.data;
+            const width = imageData.width;
+            const height = imageData.height;
+            
+            const outputData = new Uint8ClampedArray(data);
+            const centerX = width / 2;
+            const centerY = height / 2;
+            
+            if (direction === 'vertical') {
+                for (let x = 0; x < width; x += Math.max(1, Math.floor(10 * intensity))) {
+                    const column = [];
+                    for (let y = 0; y < height; y++) {
+                        const index = (y * width + x) * 4;
+                        column.push({
                             r: data[index],
                             g: data[index + 1],
                             b: data[index + 2],
-                            a: data[index + 3],
-                            x: Math.floor(x),
-                            y: Math.floor(y)
+                            a: data[index + 3]
                         });
                     }
+                    
+                    // 複数のソート方法
+                    const sortMethod = Math.floor(this.currentFrame / 30) % 4;
+                    switch (sortMethod) {
+                        case 0: // 明度でソート
+                            column.sort((a, b) => {
+                                const brightnessA = (a.r + a.g + a.b) / 3;
+                                const brightnessB = (b.r + b.g + b.b) / 3;
+                                return brightnessA - brightnessB;
+                            });
+                            break;
+                        case 1: // 色相でソート
+                            column.sort((a, b) => {
+                                const hueA = this.getHue(a.r, a.g, a.b);
+                                const hueB = this.getHue(b.r, b.g, b.b);
+                                return hueA - hueB;
+                            });
+                            break;
+                        case 2: // 彩度でソート
+                            column.sort((a, b) => {
+                                const satA = this.getSaturation(a.r, a.g, a.b);
+                                const satB = this.getSaturation(b.r, b.g, b.b);
+                                return satA - satB;
+                            });
+                            break;
+                        case 3: // ランダムソート
+                            for (let i = column.length - 1; i > 0; i--) {
+                                const j = Math.floor(Math.random() * (i + 1));
+                                [column[i], column[j]] = [column[j], column[i]];
+                            }
+                            break;
+                    }
+                    
+                    for (let y = 0; y < height; y++) {
+                        const index = (y * width + x) * 4;
+                        outputData[index] = column[y].r;
+                        outputData[index + 1] = column[y].g;
+                        outputData[index + 2] = column[y].b;
+                        outputData[index + 3] = column[y].a;
+                    }
                 }
-                
-                // 明度でソート
-                pixels.sort((a, b) => {
-                    const brightnessA = (a.r + a.g + a.b) / 3;
-                    const brightnessB = (b.r + b.g + b.b) / 3;
-                    return brightnessA - brightnessB;
-                });
-                
-                // ソートされたピクセルを配置
-                for (let i = 0; i < pixels.length; i++) {
-                    const pixel = pixels[i];
-                    const index = (pixel.y * width + pixel.x) * 4;
-                    outputData[index] = pixel.r;
-                    outputData[index + 1] = pixel.g;
-                    outputData[index + 2] = pixel.b;
-                    outputData[index + 3] = pixel.a;
+            } else if (direction === 'horizontal') {
+                for (let y = 0; y < height; y += Math.max(1, Math.floor(10 * intensity))) {
+                    const row = [];
+                    for (let x = 0; x < width; x++) {
+                        const index = (y * width + x) * 4;
+                        row.push({
+                            r: data[index],
+                            g: data[index + 1],
+                            b: data[index + 2],
+                            a: data[index + 3]
+                        });
+                    }
+                    
+                    // 明度でソート
+                    row.sort((a, b) => {
+                        const brightnessA = (a.r + a.g + a.b) / 3;
+                        const brightnessB = (b.r + b.g + b.b) / 3;
+                        return brightnessA - brightnessB;
+                    });
+                    
+                    for (let x = 0; x < width; x++) {
+                        const index = (y * width + x) * 4;
+                        outputData[index] = row[x].r;
+                        outputData[index + 1] = row[x].g;
+                        outputData[index + 2] = row[x].b;
+                        outputData[index + 3] = row[x].a;
+                    }
+                }
+            } else if (direction === 'radial') {
+                // 放射状のピクセルソート
+                for (let angle = 0; angle < 360; angle += 5) {
+                    const rad = angle * Math.PI / 180;
+                    const pixels = [];
+                    
+                    for (let r = 0; r < Math.max(width, height); r++) {
+                        const x = centerX + Math.cos(rad) * r;
+                        const y = centerY + Math.sin(rad) * r;
+                        
+                        if (x >= 0 && x < width && y >= 0 && y < height) {
+                            const index = (Math.floor(y) * width + Math.floor(x)) * 4;
+                            pixels.push({
+                                r: data[index],
+                                g: data[index + 1],
+                                b: data[index + 2],
+                                a: data[index + 3],
+                                x: Math.floor(x),
+                                y: Math.floor(y)
+                            });
+                        }
+                    }
+                    
+                    // 明度でソート
+                    pixels.sort((a, b) => {
+                        const brightnessA = (a.r + a.g + a.b) / 3;
+                        const brightnessB = (b.r + b.g + b.b) / 3;
+                        return brightnessA - brightnessB;
+                    });
+                    
+                    // ソートされたピクセルを配置
+                    for (let i = 0; i < pixels.length; i++) {
+                        const pixel = pixels[i];
+                        const index = (pixel.y * width + pixel.x) * 4;
+                        outputData[index] = pixel.r;
+                        outputData[index + 1] = pixel.g;
+                        outputData[index + 2] = pixel.b;
+                        outputData[index + 3] = pixel.a;
+                    }
                 }
             }
-        }
 
-        const newImageData = new ImageData(outputData, width, height);
-        this.outputCtx.putImageData(newImageData, 0, 0);
+            const newImageData = new ImageData(outputData, width, height);
+            this.outputCtx.putImageData(newImageData, 0, 0);
+        } catch (error) {
+            console.error('Pixel sort effect error:', error);
+            // エラーが発生した場合は、ソース画像をそのまま表示
+            this.outputCtx.drawImage(this.sourceCanvas, 0, 0);
+        }
     }
 
     getHue(r, g, b) {
@@ -920,12 +1411,13 @@ class SlitScanEffect {
     }
 
     applyGlitchEffect(intensity) {
-        const imageData = this.sourceCtx.getImageData(0, 0, this.sourceCanvas.width, this.sourceCanvas.height);
-        const data = imageData.data;
-        const width = imageData.width;
-        const height = imageData.height;
-        
-        const outputData = new Uint8ClampedArray(data);
+        try {
+            const imageData = this.sourceCtx.getImageData(0, 0, this.sourceCanvas.width, this.sourceCanvas.height);
+            const data = imageData.data;
+            const width = imageData.width;
+            const height = imageData.height;
+            
+            const outputData = new Uint8ClampedArray(data);
         
         // ランダムなグリッチブロック
         const numGlitches = Math.floor(intensity * 20);
@@ -965,12 +1457,23 @@ class SlitScanEffect {
 
         const newImageData = new ImageData(outputData, width, height);
         this.outputCtx.putImageData(newImageData, 0, 0);
+    } catch (error) {
+        console.error('Glitch effect error:', error);
+        // エラーが発生した場合は、ソース画像をそのまま表示
+        this.outputCtx.drawImage(this.sourceCanvas, 0, 0);
     }
+}
 
-    applyCombinedEffect(intensity, direction, stretchType, stretchAmount) {
-        this.applySlitScanEffect(intensity * 0.7, direction, stretchType, stretchAmount);
-        this.applyPixelSortEffect(intensity * 0.5, direction);
-        this.applyGlitchEffect(intensity * 0.3);
+applyCombinedEffect(intensity, direction, stretchType, stretchAmount) {
+    try {
+            this.applySlitScanEffect(intensity * 0.7, direction, stretchType, stretchAmount);
+            this.applyPixelSortEffect(intensity * 0.5, direction);
+            this.applyGlitchEffect(intensity * 0.3);
+        } catch (error) {
+            console.error('Combined effect error:', error);
+            // エラーが発生した場合は、ソース画像をそのまま表示
+            this.outputCtx.drawImage(this.sourceCanvas, 0, 0);
+        }
     }
 
     resetCanvas() {
@@ -1035,10 +1538,19 @@ class SlitScanEffect {
             }
             
             if (document.getElementById('autoStretch').checked) {
-                // ストレッチ量を余弦波で変化させる（0-200の範囲）
-                const stretchAmount = Math.abs(Math.cos(this.autoTime * autoSpeed * 1.5)) * 200;
-                document.getElementById('stretchAmount').value = Math.round(stretchAmount);
-                document.getElementById('stretchAmountValue').textContent = Math.round(stretchAmount);
+                // ストレッチ量を正弦波でスムーズに変化させる（0-200の範囲）
+                const normalizedStretch = (Math.sin(this.autoTime * autoSpeed * 1.5) + 1) / 2; // 0-1の範囲
+                const stretchAmount = Math.round(normalizedStretch * 200);
+                
+                // 前の値との差分を制限して急激な変化を防ぐ
+                const currentValue = parseInt(document.getElementById('stretchAmount').value);
+                const maxChange = 3; // 1フレームあたりの最大変化量（通常モードは少し遅く）
+                const diff = stretchAmount - currentValue;
+                const limitedDiff = Math.max(-maxChange, Math.min(maxChange, diff));
+                const newValue = currentValue + limitedDiff;
+                
+                document.getElementById('stretchAmount').value = newValue;
+                document.getElementById('stretchAmountValue').textContent = newValue;
             }
             
             // エフェクトを適用
@@ -1091,10 +1603,24 @@ class SlitScanEffect {
             }
             
             if (document.getElementById('autoStretch').checked) {
-                // ストレッチ量を余弦波で変化させる（0-200の範囲）
-                const stretchAmount = Math.abs(Math.cos(this.recordingTime * autoSpeed * 1.5)) * 200;
-                document.getElementById('stretchAmount').value = Math.round(stretchAmount);
-                document.getElementById('stretchAmountValue').textContent = Math.round(stretchAmount);
+                // ストレッチ量を正弦波でスムーズに変化させる（0-200の範囲）
+                const normalizedStretch = (Math.sin(this.recordingTime * autoSpeed * 1.5) + 1) / 2; // 0-1の範囲
+                const stretchAmount = Math.round(normalizedStretch * 200);
+                
+                // 前の値との差分を制限して急激な変化を防ぐ
+                const currentValue = parseInt(document.getElementById('stretchAmount').value);
+                const maxChange = 5; // 1フレームあたりの最大変化量
+                const diff = stretchAmount - currentValue;
+                const limitedDiff = Math.max(-maxChange, Math.min(maxChange, diff));
+                const newValue = currentValue + limitedDiff;
+                
+                document.getElementById('stretchAmount').value = newValue;
+                document.getElementById('stretchAmountValue').textContent = newValue;
+                
+                // デバッグログ（録画中のみ）
+                if (this.isRecording && this.recordedFrames.length % 30 === 0) { // 30フレームごとにログ
+                    console.log(`Recording frame ${this.recordedFrames.length}: stretchAmount = ${newValue}`);
+                }
             }
             
             // エフェクトを適用
@@ -1121,6 +1647,75 @@ class SlitScanEffect {
         link.click();
     }
 
+    openPopupWindow() {
+        // ポップアップウィンドウの設定
+        const popupFeatures = [
+            'width=800',
+            'height=600',
+            'resizable=yes',
+            'scrollbars=no',
+            'toolbar=no',
+            'menubar=no',
+            'location=no',
+            'status=no',
+            'directories=no',
+            'copyhistory=no'
+        ].join(',');
+
+        // ポップアップウィンドウを開く
+        const popup = window.open('popup.html', 'canvasPopup', popupFeatures);
+        
+        if (popup) {
+            this.popupWindow = popup;
+            
+            // ポップアップウィンドウが読み込まれた後の処理
+            popup.addEventListener('load', () => {
+                console.log('Popup window loaded');
+                
+                // ポップアップウィンドウにメインウィンドウの参照を渡す
+                popup.slitScanEffect = this;
+                
+                // 定期的にポップアップウィンドウを更新
+                this.startPopupUpdate();
+            });
+            
+            // ポップアップウィンドウが閉じられた時の処理
+            popup.addEventListener('beforeunload', () => {
+                console.log('Popup window closed');
+                this.stopPopupUpdate();
+                this.popupWindow = null;
+            });
+            
+        } else {
+            alert('ポップアップがブロックされました。ブラウザの設定でポップアップを許可してください。');
+        }
+    }
+
+    startPopupUpdate() {
+        if (this.popupUpdateInterval) {
+            clearInterval(this.popupUpdateInterval);
+        }
+        
+        // 30FPSでポップアップウィンドウを更新
+        this.popupUpdateInterval = setInterval(() => {
+            if (this.popupWindow && !this.popupWindow.closed) {
+                // ポップアップウィンドウにメッセージを送信
+                this.popupWindow.postMessage({
+                    type: 'updateCanvas'
+                }, '*');
+            } else {
+                this.stopPopupUpdate();
+            }
+        }, 1000 / 30);
+    }
+
+    stopPopupUpdate() {
+        if (this.popupUpdateInterval) {
+            clearInterval(this.popupUpdateInterval);
+            this.popupUpdateInterval = null;
+        }
+    }
+
     downloadVideo() {
         // MediaRecorder のサポートチェック
         if (!window.MediaRecorder) {
@@ -1145,7 +1740,8 @@ class SlitScanEffect {
         }
 
         this.isRecording = true;
-        this.recordedChunks = [];
+        this.recordedFrames = [];
+        this.recordingStartTime = performance.now();
         
         // 録画ステータスを表示
         document.getElementById('recordingStatus').style.display = 'flex';
@@ -1154,122 +1750,57 @@ class SlitScanEffect {
         
         // 録画時間を設定（ユーザーが選択した時間）
         const recordingDuration = parseInt(document.getElementById('recordingDuration').value); // 秒
+        const targetFPS = 30; // 30FPS for smooth playback
+        const frameInterval = 1000 / targetFPS; // ミリ秒
         
-        // MediaRecorder の設定 - 超高画質
-        const stream = this.outputCanvas.captureStream(120); // 120 FPS for ultra high quality
+        console.log(`Starting simple screen recording: ${recordingDuration}s at ${targetFPS}FPS`);
         
-        // ユーザーが選択した形式と品質を取得
-        const userFormat = document.getElementById('videoFormat').value;
-        const userQuality = document.getElementById('videoQuality').value;
-        
-        // サポートされている形式をチェック
-        let supportedTypes = [];
-        
-        if (userFormat === 'mp4') {
-            supportedTypes = [
-                'video/mp4',
-                'video/mp4;codecs=h264',
-                'video/webm;codecs=h264'
-            ];
-        } else if (userFormat === 'webm') {
-            supportedTypes = [
-                'video/webm;codecs=vp9',
-                'video/webm'
-            ];
-        } else {
-            // Auto mode - 最適な形式を選択
-            supportedTypes = [
-                'video/mp4',
-                'video/mp4;codecs=h264',
-                'video/webm;codecs=h264',
-                'video/webm;codecs=vp9',
-                'video/webm'
-            ];
-        }
-        
-        let selectedType = null;
-        for (const type of supportedTypes) {
-            if (MediaRecorder.isTypeSupported(type)) {
-                selectedType = type;
-                console.log('Selected video format:', type);
-                break;
+        // 録画ループを開始
+        const recordFrame = () => {
+            if (!this.isRecording) return;
+            
+            const currentTime = performance.now();
+            const elapsedTime = (currentTime - this.recordingStartTime) / 1000;
+            
+            if (elapsedTime >= recordingDuration) {
+                this.stopVideoRecording();
+                return;
             }
-        }
-        
-        if (!selectedType) {
-            console.warn('Selected format not supported, falling back to default');
-            // フォールバック用の形式をチェック
-            const fallbackTypes = ['video/webm;codecs=vp9', 'video/webm'];
-            for (const type of fallbackTypes) {
-                if (MediaRecorder.isTypeSupported(type)) {
-                    selectedType = type;
-                    break;
-                }
+            
+            // フレームレート制限（30FPS）
+            if (this.lastRecordFrameTime && currentTime - this.lastRecordFrameTime < frameInterval) {
+                requestAnimationFrame(recordFrame);
+                return;
             }
-            if (!selectedType) {
-                selectedType = 'video/webm';
+            this.lastRecordFrameTime = currentTime;
+            
+            // 現在のキャンバスを画像として保存
+            try {
+                const frameDataURL = this.outputCanvas.toDataURL('image/png', 0.9);
+                this.recordedFrames.push({
+                    dataURL: frameDataURL,
+                    timestamp: elapsedTime
+                });
+                
+                // 録画進捗を更新
+                const progress = (elapsedTime / recordingDuration) * 100;
+                document.getElementById('recordingStatus').textContent = `Recording... ${progress.toFixed(1)}%`;
+                
+            } catch (error) {
+                console.error('Frame capture error:', error);
             }
-        }
-        
-        // 超高品質設定（静止画用）
-        let bitrate = 25000000; // 25 Mbps for ultra high quality image recording
-        switch (userQuality) {
-            case 'high':
-                bitrate = 25000000; // 25 Mbps
-                break;
-            case 'medium':
-                bitrate = 15000000; // 15 Mbps
-                break;
-            case 'low':
-                bitrate = 8000000; // 8 Mbps
-                break;
-        }
-        
-        // 高品質設定
-        const recorderOptions = {
-            mimeType: selectedType,
-            videoBitsPerSecond: bitrate
+            
+            // 次のフレームをスケジュール
+            requestAnimationFrame(recordFrame);
         };
         
-        console.log(`Image recording with bitrate: ${bitrate / 1000000} Mbps`);
-        console.log(`Canvas resolution: ${this.outputCanvas.width}x${this.outputCanvas.height}`);
-        console.log(`Frame rate: 120 FPS`);
-        console.log(`Recording duration: ${recordingDuration} seconds`);
-        console.log(`Estimated file size: ~${Math.round((bitrate * recordingDuration) / 8000000)} MB`);
-        
-        // ビットレート設定がサポートされていない場合のフォールバック
-        try {
-            this.mediaRecorder = new MediaRecorder(stream, recorderOptions);
-        } catch (error) {
-            console.warn('High bitrate not supported, using default settings:', error);
-            this.mediaRecorder = new MediaRecorder(stream, {
-                mimeType: selectedType
-            });
-        }
-
-        this.mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
-                this.recordedChunks.push(event.data);
-            }
-        };
-
-        this.mediaRecorder.onstop = () => {
-            this.createVideoDownload(selectedType);
-        };
-
         // 録画開始
-        this.mediaRecorder.start();
-        console.log('Image recording started with format:', selectedType);
-
+        recordFrame();
+        
         // 静止画の場合、自動アニメーションを開始（録画中のみ）
         if (!this.isVideo && this.autoMode) {
             this.startAutoAnimationForRecording();
         }
-
-        // 指定時間後に録画停止
-        setTimeout(() => {
-            this.stopVideoRecording();
-        }, recordingDuration * 1000);
     }
 
     startVideoRecording() {
@@ -1279,7 +1810,8 @@ class SlitScanEffect {
         }
 
         this.isRecording = true;
-        this.recordedChunks = [];
+        this.recordedFrames = [];
+        this.recordingStartTime = performance.now();
         
         // 録画ステータスを表示
         document.getElementById('recordingStatus').style.display = 'flex';
@@ -1290,117 +1822,56 @@ class SlitScanEffect {
         this.video.currentTime = 0;
         this.video.loop = false;
         
-        // MediaRecorder の設定 - 超高画質
-        const stream = this.outputCanvas.captureStream(120); // 120 FPS for ultra high quality
+        const targetFPS = 30; // 30FPS for smooth playback
+        const frameInterval = 1000 / targetFPS; // ミリ秒
         
-        // ユーザーが選択した形式と品質を取得
-        const userFormat = document.getElementById('videoFormat').value;
-        const userQuality = document.getElementById('videoQuality').value;
+        console.log(`Starting video recording: ${this.originalVideoDuration}s at ${targetFPS}FPS`);
         
-        // サポートされている形式をチェック
-        let supportedTypes = [];
-        
-        if (userFormat === 'mp4') {
-            supportedTypes = [
-                'video/mp4',
-                'video/mp4;codecs=h264',
-                'video/webm;codecs=h264'
-            ];
-        } else if (userFormat === 'webm') {
-            supportedTypes = [
-                'video/webm;codecs=vp9',
-                'video/webm'
-            ];
-        } else {
-            // Auto mode - 最適な形式を選択
-            supportedTypes = [
-                'video/mp4',
-                'video/mp4;codecs=h264',
-                'video/webm;codecs=h264',
-                'video/webm;codecs=vp9',
-                'video/webm'
-            ];
-        }
-        
-        let selectedType = null;
-        for (const type of supportedTypes) {
-            if (MediaRecorder.isTypeSupported(type)) {
-                selectedType = type;
-                console.log('Selected video format:', type);
-                break;
+        // 録画ループを開始
+        const recordFrame = () => {
+            if (!this.isRecording) return;
+            
+            const currentTime = performance.now();
+            const elapsedTime = (currentTime - this.recordingStartTime) / 1000;
+            
+            if (elapsedTime >= this.originalVideoDuration) {
+                this.stopVideoRecording();
+                return;
             }
-        }
-        
-        if (!selectedType) {
-            console.warn('Selected format not supported, falling back to default');
-            // フォールバック用の形式をチェック
-            const fallbackTypes = ['video/webm;codecs=vp9', 'video/webm'];
-            for (const type of fallbackTypes) {
-                if (MediaRecorder.isTypeSupported(type)) {
-                    selectedType = type;
-                    break;
-                }
+            
+            // フレームレート制限（30FPS）
+            if (this.lastRecordFrameTime && currentTime - this.lastRecordFrameTime < frameInterval) {
+                requestAnimationFrame(recordFrame);
+                return;
             }
-            if (!selectedType) {
-                selectedType = 'video/webm';
+            this.lastRecordFrameTime = currentTime;
+            
+            // 現在のキャンバスを画像として保存
+            try {
+                const frameDataURL = this.outputCanvas.toDataURL('image/png', 0.9);
+                this.recordedFrames.push({
+                    dataURL: frameDataURL,
+                    timestamp: elapsedTime
+                });
+                
+                // 録画進捗を更新
+                const progress = (elapsedTime / this.originalVideoDuration) * 100;
+                document.getElementById('recordingStatus').textContent = `Recording... ${progress.toFixed(1)}%`;
+                
+            } catch (error) {
+                console.error('Frame capture error:', error);
             }
-        }
-        
-        // 超高品質設定（動画用）
-        let bitrate = 20000000; // デフォルト: 20 Mbps
-        switch (userQuality) {
-            case 'high':
-                bitrate = 20000000; // 20 Mbps
-                break;
-            case 'medium':
-                bitrate = 12000000; // 12 Mbps
-                break;
-            case 'low':
-                bitrate = 6000000; // 6 Mbps
-                break;
-        }
-        
-        // 高品質設定
-        const recorderOptions = {
-            mimeType: selectedType,
-            videoBitsPerSecond: bitrate
+            
+            // 次のフレームをスケジュール
+            requestAnimationFrame(recordFrame);
         };
         
-        console.log(`Video recording with bitrate: ${bitrate / 1000000} Mbps`);
-        console.log(`Canvas resolution: ${this.outputCanvas.width}x${this.outputCanvas.height}`);
-        console.log(`Frame rate: 120 FPS`);
-        console.log(`Estimated file size: ~${Math.round((bitrate * this.originalVideoDuration) / 8000000)} MB`);
-        
-        // ビットレート設定がサポートされていない場合のフォールバック
-        try {
-            this.mediaRecorder = new MediaRecorder(stream, recorderOptions);
-        } catch (error) {
-            console.warn('High bitrate not supported, using default settings:', error);
-            this.mediaRecorder = new MediaRecorder(stream, {
-                mimeType: selectedType
-            });
-        }
-
-        this.mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
-                this.recordedChunks.push(event.data);
-            }
-        };
-
-        this.mediaRecorder.onstop = () => {
-            this.createVideoDownload(selectedType);
-        };
-
         // 録画開始
-        this.mediaRecorder.start();
-        console.log('Video recording started with format:', selectedType);
-
+        recordFrame();
+        
         // 動画再生開始
         this.video.play().then(() => {
-            // 動画の長さ分だけ録画
-            setTimeout(() => {
-                this.stopVideoRecording();
-            }, this.originalVideoDuration * 1000);
+            console.log('Video playback started for recording');
         }).catch((error) => {
             console.error('Failed to start video playback for recording:', error);
             this.isRecording = false;
@@ -1409,8 +1880,7 @@ class SlitScanEffect {
     }
 
     stopVideoRecording() {
-        if (this.mediaRecorder && this.isRecording) {
-            this.mediaRecorder.stop();
+        if (this.isRecording) {
             this.isRecording = false;
             
             // 動画の場合のみ動画を停止
@@ -1421,6 +1891,9 @@ class SlitScanEffect {
             
             // 録画専用アニメーションを停止
             this.stopAutoAnimationForRecording();
+            
+            // 録画されたフレームからGIFを作成
+            this.createGIFFromFrames();
             
             this.hideRecordingStatus();
             console.log('Video recording stopped');
@@ -1433,45 +1906,237 @@ class SlitScanEffect {
         document.getElementById('downloadBtn').textContent = this.isVideo ? 'Download Video' : 'Download Animation';
     }
 
-    createVideoDownload(selectedType) {
-        // ファイル拡張子を決定
-        let fileExtension = 'webm';
-        let mimeType = 'video/webm';
-        
-        if (selectedType.includes('mp4')) {
-            fileExtension = 'mp4';
-            mimeType = 'video/mp4';
-        } else if (selectedType.includes('h264')) {
-            fileExtension = 'mp4';
-            mimeType = 'video/mp4';
+    createGIFFromFrames() {
+        if (!this.recordedFrames || this.recordedFrames.length === 0) {
+            console.error('No frames recorded');
+            return;
         }
         
-        const blob = new Blob(this.recordedChunks, { type: mimeType });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `slit-scan-video.${fileExtension}`;
-        link.click();
+        console.log(`Processing ${this.recordedFrames.length} recorded frames`);
         
-        // メモリクリーンアップ
-        URL.revokeObjectURL(url);
-        this.recordedChunks = [];
+        // ユーザーに選択肢を提供
+        const choice = confirm(
+            '録画完了！\n\n' +
+            'OK: WebM動画としてダウンロード（推奨）\n' +
+            'キャンセル: PNGフレームをZIPでダウンロード\n\n' +
+            'WebMは軽量で直接再生可能、ZIPは高品質フレームです。'
+        );
         
-        console.log(`Video download created in ${fileExtension.toUpperCase()} format`);
+        if (choice) {
+            this.createWebMFromFrames();
+        } else {
+            this.createZIPFromFrames();
+        }
+    }
+    
+    createWebMFromFrames() {
+        console.log('Creating WebM video from frames');
+        this.createWebMVideo();
+    }
+    
+    createWebMVideo() {
+        console.log('Creating WebM video from recorded frames');
         
-        // 成功メッセージを表示
-        setTimeout(() => {
-            alert(`Video download completed in ${fileExtension.toUpperCase()} format! Check your downloads folder.`);
-        }, 100);
+        // 進捗表示
+        document.getElementById('recordingStatus').style.display = 'flex';
+        document.getElementById('recordingStatus').textContent = 'Creating WebM video...';
+        
+        // 一時的なキャンバスを作成して録画
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = this.outputCanvas.width;
+        tempCanvas.height = this.outputCanvas.height;
+        const tempCtx = tempCanvas.getContext('2d');
+        
+        // キャンバスからストリームを取得
+        const stream = tempCanvas.captureStream(30);
+        
+        // WebM形式をチェック
+        const webmTypes = [
+            'video/webm;codecs=vp9',
+            'video/webm;codecs=vp8',
+            'video/webm'
+        ];
+        
+        let selectedType = null;
+        for (const type of webmTypes) {
+            if (MediaRecorder.isTypeSupported(type)) {
+                selectedType = type;
+                console.log('Selected WebM format:', type);
+                break;
+            }
+        }
+        
+        if (!selectedType) {
+            console.warn('WebM not supported, falling back to ZIP');
+            document.getElementById('recordingStatus').style.display = 'none';
+            this.createZIPFromFrames();
+            return;
+        }
+        
+        // MediaRecorderの設定
+        const recorderOptions = {
+            mimeType: selectedType,
+            videoBitsPerSecond: 6000000 // 6 Mbps for good quality
+        };
+        
+        try {
+            const mediaRecorder = new MediaRecorder(stream, recorderOptions);
+            const chunks = [];
+            
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    chunks.push(event.data);
+                }
+            };
+            
+            mediaRecorder.onstop = () => {
+                const blob = new Blob(chunks, { type: selectedType });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `slit-scan-video-${Date.now()}.webm`;
+                link.click();
+                
+                // メモリクリーンアップ
+                URL.revokeObjectURL(url);
+                this.recordedFrames = [];
+                
+                // 進捗表示を隠す
+                document.getElementById('recordingStatus').style.display = 'none';
+                
+                console.log('WebM video downloaded');
+                
+                // 成功メッセージを表示
+                setTimeout(() => {
+                    alert(
+                        'WebM動画をダウンロードしました！\n\n' +
+                        'MP4に変換するには:\n' +
+                        '• Online-Convert.com\n' +
+                        '• CloudConvert.com\n' +
+                        '• FFmpeg: ffmpeg -i input.webm output.mp4\n\n' +
+                        'WebMはChrome、Firefox、Edgeで直接再生可能です。'
+                    );
+                }, 100);
+            };
+            
+            // 録画開始
+            mediaRecorder.start();
+            
+            // フレームを順次再生して録画
+            let frameIndex = 0;
+            const playFrames = () => {
+                if (frameIndex >= this.recordedFrames.length) {
+                    mediaRecorder.stop();
+                    return;
+                }
+                
+                // 進捗更新
+                const progress = (frameIndex / this.recordedFrames.length) * 100;
+                document.getElementById('recordingStatus').textContent = `Creating WebM video... ${progress.toFixed(1)}%`;
+                
+                // フレームを一時キャンバスに描画
+                const img = new Image();
+                img.onload = () => {
+                    tempCtx.clearRect(0, 0, tempCanvas.width, tempCanvas.height);
+                    tempCtx.drawImage(img, 0, 0);
+                    
+                    frameIndex++;
+                    setTimeout(playFrames, 33); // ~30 FPS
+                };
+                img.src = this.recordedFrames[frameIndex].dataURL;
+            };
+            
+            playFrames();
+            
+        } catch (error) {
+            console.error('WebM recording failed:', error);
+            document.getElementById('recordingStatus').style.display = 'none';
+            this.createZIPFromFrames();
+        }
+    }
+    
+    createMP4Video() {
+        console.log('MP4 conversion not available, offering alternatives');
+        
+        const choice = confirm(
+            'MP4変換機能は現在利用できません。\n\n' +
+            'OK: WebM動画としてダウンロード（推奨）\n' +
+            'キャンセル: PNGフレームをZIPでダウンロード\n\n' +
+            'WebMは軽量で、オンラインツールでMP4に変換できます。'
+        );
+        
+        if (choice) {
+            this.createWebMVideo();
+        } else {
+            this.createZIPFromFrames();
+        }
+    }
+    
+    createZIPFromFrames() {
+        console.log('Creating ZIP from frames');
+        
+        const zip = new JSZip();
+        const folder = zip.folder("frames");
+        
+        this.recordedFrames.forEach((frame, index) => {
+            // DataURLからBase64データを抽出
+            const base64Data = frame.dataURL.split(',')[1];
+            folder.file(`frame_${index.toString().padStart(4, '0')}.png`, base64Data, {base64: true});
+        });
+        
+        // メタデータファイルを作成
+        const metadata = {
+            frameCount: this.recordedFrames.length,
+            duration: this.recordedFrames[this.recordedFrames.length - 1].timestamp,
+            fps: this.recordedFrames.length / this.recordedFrames[this.recordedFrames.length - 1].timestamp,
+            canvasWidth: this.outputCanvas.width,
+            canvasHeight: this.outputCanvas.height
+        };
+        
+        folder.file("metadata.json", JSON.stringify(metadata, null, 2));
+        
+        // ZIPファイルをダウンロード
+        zip.generateAsync({type: "blob"}).then((content) => {
+            const url = URL.createObjectURL(content);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `slit-scan-frames-${Date.now()}.zip`;
+            link.click();
+            
+            // メモリクリーンアップ
+            URL.revokeObjectURL(url);
+            this.recordedFrames = [];
+            
+            console.log('Animation frames downloaded as ZIP');
+            
+            // 成功メッセージを表示
+            setTimeout(() => {
+                alert(
+                    'PNGフレームをZIPでダウンロードしました！\n\n' +
+                    '動画に変換するには:\n' +
+                    '• FFmpeg: ffmpeg -framerate 30 -i frame_%04d.png output.mp4\n' +
+                    '• Online-Convert.com\n' +
+                    '• CloudConvert.com\n\n' +
+                    'フレームは高品質PNG形式で保存されています。'
+                );
+            }, 100);
+        });
     }
 }
 
         // アプリケーションの初期化
         document.addEventListener('DOMContentLoaded', () => {
-            new SlitScanEffect();
-            
-            // 動画形式のサポート状況をチェック
-            checkVideoFormatSupport();
+            try {
+                console.log('Initializing SlitScanEffect application...');
+                window.slitScanEffect = new SlitScanEffect();
+                console.log('SlitScanEffect application initialized successfully');
+                
+                // 動画形式のサポート状況をチェック
+                checkVideoFormatSupport();
+            } catch (error) {
+                console.error('Failed to initialize SlitScanEffect application:', error);
+                alert('アプリケーションの初期化に失敗しました。ページを再読み込みしてください。');
+            }
         });
 
         function checkVideoFormatSupport() {
