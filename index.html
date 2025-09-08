@@ -166,6 +166,8 @@
             <div class="canvas-header">
                 <h3>Preview</h3>
                 <div class="canvas-controls">
+                    <button id="cameraBtn" class="btn btn-small btn-camera">📹 Camera</button>
+                    <button id="fullscreenBtn" class="btn btn-small btn-fullscreen">⛶</button>
                     <button id="popupBtn" class="btn btn-small btn-popup">Popup Canvas</button>
                     <button id="resetBtn" class="btn btn-small">Reset</button>
                 </div>
@@ -175,6 +177,60 @@
                 <canvas id="outputCanvas"></canvas>
                 <video id="videoPreview" style="display: none;"></video>
             </div>
+            
+            <!-- フルスクリーン用コントロールUI -->
+            <div class="fullscreen-controls" id="fullscreenControls" style="display: none;">
+                <div class="fullscreen-controls-header">
+                    <h4>Effect Controls</h4>
+                    <button id="closeFullscreenBtn" class="btn btn-small btn-close">✕</button>
+                </div>
+                <div class="fullscreen-controls-content">
+                    <div class="fullscreen-control-group">
+                        <label for="fullscreenEffectType">Effect</label>
+                        <select id="fullscreenEffectType" class="select-control">
+                            <option value="slit-scan">Slit Scan</option>
+                            <option value="pixel-sort">Pixel Sort</option>
+                            <option value="glitch">Glitch Effect</option>
+                            <option value="combined">Combined</option>
+                        </select>
+                    </div>
+                    <div class="fullscreen-control-group">
+                        <label for="fullscreenIntensity">Intensity</label>
+                        <div class="slider-container">
+                            <input type="range" id="fullscreenIntensity" min="0" max="100" value="50" class="slider">
+                            <span id="fullscreenIntensityValue" class="slider-value">50</span>
+                        </div>
+                    </div>
+                    <div class="fullscreen-control-group">
+                        <label for="fullscreenDirection">Direction</label>
+                        <select id="fullscreenDirection" class="select-control">
+                            <option value="vertical">Vertical</option>
+                            <option value="horizontal">Horizontal</option>
+                            <option value="diagonal">Diagonal</option>
+                            <option value="radial">Radial</option>
+                            <option value="wave">Wave</option>
+                            <option value="spiral">Spiral</option>
+                        </select>
+                    </div>
+                    <div class="fullscreen-control-group">
+                        <label for="fullscreenStretchType">Stretch Type</label>
+                        <select id="fullscreenStretchType" class="select-control">
+                            <option value="uniform">Uniform</option>
+                            <option value="gradient">Gradient</option>
+                            <option value="random">Random</option>
+                            <option value="center">From Center</option>
+                            <option value="edges">From Edges</option>
+                        </select>
+                    </div>
+                    <div class="fullscreen-control-group">
+                        <label for="fullscreenStretchAmount">Stretch Amount</label>
+                        <div class="slider-container">
+                            <input type="range" id="fullscreenStretchAmount" min="0" max="200" value="100" class="slider">
+                            <span id="fullscreenStretchAmountValue" class="slider-value">100</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="info">
@@ -183,8 +239,8 @@
                 <div class="step">
                     <div class="step-number">1</div>
                     <div class="step-content">
-                        <h4>Upload Media</h4>
-                        <p>Upload an image or video file to get started</p>
+                        <h4>Upload Media or Use Camera</h4>
+                        <p>Upload an image/video file or click the camera button to use your webcam</p>
                     </div>
                 </div>
                 <div class="step">

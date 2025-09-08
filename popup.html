@@ -117,80 +117,110 @@
         
         // 初期化
         function init() {
-            popupCanvas = document.getElementById('popupCanvas');
-            popupCtx = popupCanvas.getContext('2d');
-            
-            // キャンバスサイズを設定
-            updateCanvasSize();
-            
-            // イベントリスナーを設定
-            setupEventListeners();
-            
-            // 定期的にキャンバスを更新
-            startRefresh();
+            try {
+                popupCanvas = document.getElementById('popupCanvas');
+                popupCtx = popupCanvas.getContext('2d');
+                
+                // キャンバスサイズを設定
+                updateCanvasSize();
+                
+                // イベントリスナーを設定
+                setupEventListeners();
+                
+                // 定期的にキャンバスを更新
+                startRefresh();
+                
+                console.log('Popup initialized successfully');
+            } catch (error) {
+                console.error('Popup initialization error:', error);
+                // エラーが発生した場合は再試行
+                setTimeout(init, 100);
+            }
         }
         
         // キャンバスサイズを更新
         function updateCanvasSize() {
-            if (window.opener && window.opener.slitScanEffect) {
-                const mainCanvas = window.opener.slitScanEffect.outputCanvas;
-                const aspectRatio = mainCanvas.width / mainCanvas.height;
-                
-                let newWidth, newHeight;
-                
-                if (isFullscreen) {
-                    // フルスクリーン時は画面全体を使用
-                    if (aspectRatio > 1) {
-                        // 横長
-                        newWidth = window.innerWidth;
-                        newHeight = newWidth / aspectRatio;
+            try {
+                if (window.opener && window.opener.slitScanEffect) {
+                    const mainCanvas = window.opener.slitScanEffect.outputCanvas;
+                    
+                    if (mainCanvas && mainCanvas.width > 0 && mainCanvas.height > 0) {
+                        const aspectRatio = mainCanvas.width / mainCanvas.height;
                         
-                        if (newHeight > window.innerHeight) {
-                            newHeight = window.innerHeight;
-                            newWidth = newHeight * aspectRatio;
-                        }
-                    } else {
-                        // 縦長
-                        newHeight = window.innerHeight;
-                        newWidth = newHeight * aspectRatio;
+                        let newWidth, newHeight;
                         
-                        if (newWidth > window.innerWidth) {
-                            newWidth = window.innerWidth;
-                            newHeight = newWidth / aspectRatio;
+                        if (isFullscreen) {
+                            // フルスクリーン時は画面全体を使用（余白なし）
+                            const screenWidth = window.screen.width || window.innerWidth;
+                            const screenHeight = window.screen.height || window.innerHeight;
+                            
+                            if (aspectRatio > 1) {
+                                // 横長
+                                newWidth = screenWidth;
+                                newHeight = newWidth / aspectRatio;
+                                
+                                if (newHeight > screenHeight) {
+                                    newHeight = screenHeight;
+                                    newWidth = newHeight * aspectRatio;
+                                }
+                            } else {
+                                // 縦長
+                                newHeight = screenHeight;
+                                newWidth = newHeight * aspectRatio;
+                                
+                                if (newWidth > screenWidth) {
+                                    newWidth = screenWidth;
+                                    newHeight = newWidth / aspectRatio;
+                                }
+                            }
+                        } else {
+                            // 通常時
+                            if (aspectRatio > 1) {
+                                // 横長
+                                newWidth = Math.min(window.innerWidth - 20, mainCanvas.width);
+                                newHeight = newWidth / aspectRatio;
+                            } else {
+                                // 縦長
+                                newHeight = Math.min(window.innerHeight - 20, mainCanvas.height);
+                                newWidth = newHeight * aspectRatio;
+                            }
                         }
-                    }
-                } else {
-                    // 通常時
-                    if (aspectRatio > 1) {
-                        // 横長
-                        newWidth = Math.min(window.innerWidth - 20, mainCanvas.width);
-                        newHeight = newWidth / aspectRatio;
-                    } else {
-                        // 縦長
-                        newHeight = Math.min(window.innerHeight - 20, mainCanvas.height);
-                        newWidth = newHeight * aspectRatio;
+                        
+                        // サイズが変更された場合のみ更新
+                        if (popupCanvas.width !== newWidth || popupCanvas.height !== newHeight) {
+                            popupCanvas.width = newWidth;
+                            popupCanvas.height = newHeight;
+                            console.log('Canvas size updated:', newWidth, 'x', newHeight, 'fullscreen:', isFullscreen);
+                        }
                     }
                 }
-                
-                popupCanvas.width = newWidth;
-                popupCanvas.height = newHeight;
+            } catch (error) {
+                console.warn('Update canvas size error:', error);
             }
         }
         
         // キャンバスを更新
         function updateCanvas() {
-            if (window.opener && window.opener.slitScanEffect) {
-                const mainCanvas = window.opener.slitScanEffect.outputCanvas;
-                
-                // キャンバスが有効かチェック
-                if (mainCanvas && mainCanvas.width > 0 && mainCanvas.height > 0) {
-                    try {
-                        popupCtx.clearRect(0, 0, popupCanvas.width, popupCanvas.height);
-                        popupCtx.drawImage(mainCanvas, 0, 0, popupCanvas.width, popupCanvas.height);
-                    } catch (error) {
-                        console.warn('Canvas drawing error:', error);
+            try {
+                if (window.opener && window.opener.slitScanEffect) {
+                    const mainCanvas = window.opener.slitScanEffect.outputCanvas;
+                    
+                    // キャンバスが有効かチェック
+                    if (mainCanvas && mainCanvas.width > 0 && mainCanvas.height > 0) {
+                        try {
+                            // 常に高品質な描画設定を適用
+                            popupCtx.imageSmoothingEnabled = true;
+                            popupCtx.imageSmoothingQuality = 'high';
+                            
+                            popupCtx.clearRect(0, 0, popupCanvas.width, popupCanvas.height);
+                            popupCtx.drawImage(mainCanvas, 0, 0, popupCanvas.width, popupCanvas.height);
+                        } catch (error) {
+                            console.warn('Canvas drawing error:', error);
+                        }
                     }
                 }
+            } catch (error) {
+                console.warn('Update canvas error:', error);
             }
         }
         
@@ -231,6 +261,14 @@
                         break;
                 }
             });
+            
+            // フルスクリーン時の追加イベント
+            document.addEventListener('fullscreenchange', () => {
+                if (isFullscreen) {
+                    // フルスクリーン時にフォーカスを確保
+                    document.body.focus();
+                }
+            });
         }
         
         // フルスクリーン切り替え
@@ -263,6 +301,8 @@
             if (isCurrentlyFullscreen !== isFullscreen) {
                 isFullscreen = isCurrentlyFullscreen;
                 
+                console.log('Fullscreen state changed:', isFullscreen);
+                
                 // 現在の更新を停止
                 stopRefresh();
                 
@@ -271,25 +311,26 @@
                     updateCanvasSize();
                     updateCanvas();
                     startRefresh();
-                }, isFullscreen ? 300 : 100);
+                }, 100); // 遅延を短縮
             }
         }
         
         // 定期的な更新を開始
         function startRefresh() {
-            if (refreshInterval) {
-                clearInterval(refreshInterval);
-            }
+            // 既存の更新を停止
+            stopRefresh();
+            
+            console.log('Starting refresh, fullscreen:', isFullscreen);
             
             // フルスクリーン時はrequestAnimationFrameを使用
             if (isFullscreen) {
                 function animate() {
-                    if (isFullscreen) {
-                        try {
-                            updateCanvas();
-                        } catch (error) {
-                            console.warn('Canvas update error:', error);
-                        }
+                    try {
+                        updateCanvas();
+                        animationId = requestAnimationFrame(animate);
+                    } catch (error) {
+                        console.warn('Canvas update error:', error);
+                        // エラーが発生してもアニメーションを継続
                         animationId = requestAnimationFrame(animate);
                     }
                 }
@@ -325,6 +366,10 @@
         
         // ページ読み込み時に初期化
         document.addEventListener('DOMContentLoaded', init);
+        window.addEventListener('load', init);
+        
+        // フォールバック: タイムアウトで強制初期化
+        setTimeout(init, 1000);
         
         // ページアンロード時にクリーンアップ
         window.addEventListener('beforeunload', () => {
@@ -333,10 +378,14 @@
         
         // 親ウィンドウとの通信
         window.addEventListener('message', (event) => {
-            if (event.data.type === 'updateCanvas') {
-                updateCanvas();
-            } else if (event.data.type === 'updateSize') {
-                updateCanvasSize();
+            try {
+                if (event.data.type === 'updateCanvas') {
+                    updateCanvas();
+                } else if (event.data.type === 'updateSize') {
+                    updateCanvasSize();
+                }
+            } catch (error) {
+                console.warn('Message handling error:', error);
             }
         });
     </script>

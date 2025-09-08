@@ -40,6 +40,12 @@ class SlitScanEffect {
         this.popupWindow = null;
         this.popupUpdateInterval = null;
         
+        // Webカメラ関連
+        this.cameraStream = null;
+        this.cameraVideo = null;
+        this.isCameraActive = false;
+        this.cameraAnimationId = null;
+        
         // 高度な機能の初期化（エラーが発生しても基本機能は動作）
         try {
             // WebGL GPU レンダリングの初期化
@@ -387,6 +393,25 @@ class SlitScanEffect {
             this.downloadVideo();
         });
 
+        // カメラボタン
+        const cameraBtn = document.getElementById('cameraBtn');
+        if (cameraBtn) {
+            cameraBtn.addEventListener('click', () => {
+                this.toggleCamera();
+            });
+        }
+
+        // フルスクリーンボタン
+        const fullscreenBtn = document.getElementById('fullscreenBtn');
+        if (fullscreenBtn) {
+            fullscreenBtn.addEventListener('click', () => {
+                this.toggleFullscreen();
+            });
+        }
+
+        // フルスクリーン用コントロールUIのイベントリスナー
+        this.setupFullscreenControls();
+
         // ポップアップボタン
         const popupBtn = document.getElementById('popupBtn');
         if (popupBtn) {
@@ -397,25 +422,43 @@ class SlitScanEffect {
 
         // スライダーの値を表示
         document.getElementById('intensity').addEventListener('input', (e) => {
-            document.getElementById('intensityValue').textContent = e.target.value;
-            // 静止画の場合、リアルタイムで適用
-            if (!this.isVideo) {
+            const value = e.target.value;
+            document.getElementById('intensityValue').textContent = value;
+            
+            // フルスクリーン用コントロールも同期
+            const fullscreenIntensity = document.getElementById('fullscreenIntensity');
+            if (fullscreenIntensity) {
+                fullscreenIntensity.value = value;
+                document.getElementById('fullscreenIntensityValue').textContent = value;
+            }
+            
+            // 静止画またはカメラの場合、リアルタイムで適用
+            if (!this.isVideo || this.isCameraActive) {
                 this.processFrame();
             }
         });
 
         document.getElementById('stretchAmount').addEventListener('input', (e) => {
-            document.getElementById('stretchAmountValue').textContent = e.target.value;
-            // 静止画の場合、リアルタイムで適用
-            if (!this.isVideo) {
+            const value = e.target.value;
+            document.getElementById('stretchAmountValue').textContent = value;
+            
+            // フルスクリーン用コントロールも同期
+            const fullscreenStretchAmount = document.getElementById('fullscreenStretchAmount');
+            if (fullscreenStretchAmount) {
+                fullscreenStretchAmount.value = value;
+                document.getElementById('fullscreenStretchAmountValue').textContent = value;
+            }
+            
+            // 静止画またはカメラの場合、リアルタイムで適用
+            if (!this.isVideo || this.isCameraActive) {
                 this.processFrame();
             }
         });
 
         document.getElementById('speed').addEventListener('input', (e) => {
             document.getElementById('speedValue').textContent = e.target.value;
-            // 静止画の場合、リアルタイムで適用
-            if (!this.isVideo) {
+            // 静止画またはカメラの場合、リアルタイムで適用
+            if (!this.isVideo || this.isCameraActive) {
                 this.processFrame();
             }
         });
@@ -446,7 +489,7 @@ class SlitScanEffect {
         const autoCheckboxes = ['autoIntensity', 'autoStretch'];
         autoCheckboxes.forEach(id => {
             document.getElementById(id).addEventListener('change', () => {
-                if (!this.isVideo && !this.autoMode) {
+                if ((!this.isVideo || this.isCameraActive) && !this.autoMode) {
                     this.processFrame();
                 }
             });
@@ -527,6 +570,40 @@ class SlitScanEffect {
                 }
             });
         }
+
+        // フルスクリーン状態の変更を監視
+        document.addEventListener('fullscreenchange', () => {
+            this.handleFullscreenChange();
+        });
+        document.addEventListener('webkitfullscreenchange', () => {
+            this.handleFullscreenChange();
+        });
+        document.addEventListener('msfullscreenchange', () => {
+            this.handleFullscreenChange();
+        });
+
+        // キーボードショートカット
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'F11' || e.key === 'f') {
+                e.preventDefault();
+                this.toggleFullscreen();
+            }
+        });
+
+        // ウィンドウリサイズ時の処理
+        window.addEventListener('resize', () => {
+            const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
+            if (isFullscreen) {
+                this.adjustCanvasForFullscreen();
+            }
+        });
+
+        // ページを離れる時にカメラを停止
+        window.addEventListener('beforeunload', () => {
+            if (this.isCameraActive) {
+                this.stopCamera();
+            }
+        });
     }
 
     handleFileUpload(file) {
@@ -912,7 +989,11 @@ class SlitScanEffect {
             }
             this.lastAnimateFrameTime = performance.now();
             
-            this.processFrame();
+            // カメラまたは動画がアクティブな場合のみ処理
+            if (this.isCameraActive || (this.isVideo && this.video)) {
+                this.processFrame();
+            }
+            
             this.animationId = requestAnimationFrame(animate);
         };
         animate();
@@ -926,7 +1007,26 @@ class SlitScanEffect {
         }
         this.lastFrameTime = performance.now();
 
-        if (this.isVideo && this.video && !this.video.paused && !this.video.ended) {
+        if (this.isCameraActive && this.cameraVideo && this.cameraVideo.readyState >= 2) {
+            try {
+                // カメラ映像をキャンバスサイズに合わせて描画
+                this.sourceCtx.clearRect(0, 0, this.sourceCanvas.width, this.sourceCanvas.height);
+                
+                // 高品質描画設定
+                this.sourceCtx.imageSmoothingEnabled = true;
+                this.sourceCtx.imageSmoothingQuality = 'high';
+                
+                this.sourceCtx.drawImage(this.cameraVideo, 0, 0, this.sourceCanvas.width, this.sourceCanvas.height);
+                
+                // デバッグ用：カメラ映像が描画されているか確認
+                if (this.frameCount % 60 === 0) {
+                    console.log('Camera frame drawn:', this.cameraVideo.videoWidth, 'x', this.cameraVideo.videoHeight);
+                }
+            } catch (error) {
+                console.error('Camera frame drawing error:', error);
+                return;
+            }
+        } else if (this.isVideo && this.video && !this.video.paused && !this.video.ended) {
             try {
                 // 動画をキャンバスサイズに合わせて描画
                 this.sourceCtx.clearRect(0, 0, this.sourceCanvas.width, this.sourceCanvas.height);
@@ -1659,7 +1759,9 @@ applyCombinedEffect(intensity, direction, stretchType, stretchAmount) {
             'location=no',
             'status=no',
             'directories=no',
-            'copyhistory=no'
+            'copyhistory=no',
+            'left=100',
+            'top=100'
         ].join(',');
 
         // ポップアップウィンドウを開く
@@ -1668,23 +1770,44 @@ applyCombinedEffect(intensity, direction, stretchType, stretchAmount) {
         if (popup) {
             this.popupWindow = popup;
             
-            // ポップアップウィンドウが読み込まれた後の処理
-            popup.addEventListener('load', () => {
-                console.log('Popup window loaded');
-                
-                // ポップアップウィンドウにメインウィンドウの参照を渡す
-                popup.slitScanEffect = this;
-                
-                // 定期的にポップアップウィンドウを更新
-                this.startPopupUpdate();
-            });
+            // Windowsでの互換性のため、複数の方法でイベントを設定
+            const setupPopup = () => {
+                try {
+                    console.log('Popup window loaded');
+                    
+                    // ポップアップウィンドウにメインウィンドウの参照を渡す
+                    popup.slitScanEffect = this;
+                    
+                    // 定期的にポップアップウィンドウを更新
+                    this.startPopupUpdate();
+                    
+                    // ポップアップウィンドウが閉じられた時の処理
+                    const checkClosed = setInterval(() => {
+                        if (popup.closed) {
+                            console.log('Popup window closed');
+                            this.stopPopupUpdate();
+                            this.popupWindow = null;
+                            clearInterval(checkClosed);
+                        }
+                    }, 1000);
+                    
+                } catch (error) {
+                    console.warn('Popup setup error:', error);
+                    // エラーが発生した場合は再試行
+                    setTimeout(setupPopup, 100);
+                }
+            };
             
-            // ポップアップウィンドウが閉じられた時の処理
-            popup.addEventListener('beforeunload', () => {
-                console.log('Popup window closed');
-                this.stopPopupUpdate();
-                this.popupWindow = null;
-            });
+            // 複数の方法でロードイベントを監視
+            if (popup.document.readyState === 'complete') {
+                setupPopup();
+            } else {
+                popup.addEventListener('load', setupPopup);
+                popup.addEventListener('DOMContentLoaded', setupPopup);
+                
+                // フォールバック: タイムアウトで強制実行
+                setTimeout(setupPopup, 2000);
+            }
             
         } else {
             alert('ポップアップがブロックされました。ブラウザの設定でポップアップを許可してください。');
@@ -1696,23 +1819,472 @@ applyCombinedEffect(intensity, direction, stretchType, stretchAmount) {
             clearInterval(this.popupUpdateInterval);
         }
         
-        // 30FPSでポップアップウィンドウを更新
+        // フルスクリーン時はより高頻度で更新
+        const updateInterval = this.popupWindow && this.popupWindow.isFullscreen ? 1000 / 60 : 1000 / 30;
+        
         this.popupUpdateInterval = setInterval(() => {
-            if (this.popupWindow && !this.popupWindow.closed) {
-                // ポップアップウィンドウにメッセージを送信
-                this.popupWindow.postMessage({
-                    type: 'updateCanvas'
-                }, '*');
-            } else {
+            try {
+                if (this.popupWindow && !this.popupWindow.closed) {
+                    // ポップアップウィンドウにメッセージを送信
+                    this.popupWindow.postMessage({
+                        type: 'updateCanvas'
+                    }, '*');
+                    
+                    // 直接的な更新も試行（Windowsでの互換性のため）
+                    if (this.popupWindow.slitScanEffect && this.outputCanvas) {
+                        try {
+                            const popupCanvas = this.popupWindow.document.getElementById('popupCanvas');
+                            if (popupCanvas) {
+                                const popupCtx = popupCanvas.getContext('2d');
+                                if (popupCtx) {
+                                    // 高品質描画設定
+                                    popupCtx.imageSmoothingEnabled = true;
+                                    popupCtx.imageSmoothingQuality = 'high';
+                                    
+                                    popupCtx.clearRect(0, 0, popupCanvas.width, popupCanvas.height);
+                                    popupCtx.drawImage(this.outputCanvas, 0, 0, popupCanvas.width, popupCanvas.height);
+                                }
+                            }
+                        } catch (error) {
+                            // 直接更新でエラーが発生した場合は無視
+                        }
+                    }
+                } else {
+                    this.stopPopupUpdate();
+                }
+            } catch (error) {
+                console.warn('Popup update error:', error);
                 this.stopPopupUpdate();
             }
-        }, 1000 / 30);
+        }, updateInterval);
     }
 
     stopPopupUpdate() {
         if (this.popupUpdateInterval) {
             clearInterval(this.popupUpdateInterval);
             this.popupUpdateInterval = null;
+        }
+    }
+
+    // Webカメラ機能
+    async startCamera() {
+        // カメラ選択ダイアログを表示
+        await this.showCameraSelectionDialog();
+    }
+
+    stopCamera() {
+        if (this.cameraStream) {
+            // カメラストリームを停止
+            this.cameraStream.getTracks().forEach(track => track.stop());
+            this.cameraStream = null;
+        }
+
+        if (this.cameraVideo) {
+            this.cameraVideo.pause();
+            this.cameraVideo.srcObject = null;
+            this.cameraVideo = null;
+        }
+
+        // アニメーションを停止
+        if (this.cameraAnimationId) {
+            cancelAnimationFrame(this.cameraAnimationId);
+            this.cameraAnimationId = null;
+        }
+
+        this.isCameraActive = false;
+        this.isVideo = false;
+
+        // ボタンの状態を更新
+        const cameraBtn = document.getElementById('cameraBtn');
+        if (cameraBtn) {
+            cameraBtn.textContent = '📹 Camera';
+            cameraBtn.classList.remove('active');
+        }
+
+        console.log('Camera stopped');
+    }
+
+    startCameraAnimation() {
+        // カメラアニメーション開始
+        this.animate();
+    }
+
+    // 利用可能なカメラデバイスを取得
+    async getAvailableCameras() {
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(device => device.kind === 'videoinput');
+            console.log('Available cameras:', videoDevices);
+            return videoDevices;
+        } catch (error) {
+            console.error('Error getting camera devices:', error);
+            return [];
+        }
+    }
+
+    // 特定のカメラデバイスでカメラを開始
+    async startCameraWithDevice(deviceId = null) {
+        try {
+            // 既存のカメラを停止
+            if (this.isCameraActive) {
+                this.stopCamera();
+            }
+
+            // カメラストリームを取得
+            const constraints = {
+                video: {
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                    facingMode: 'user'
+                },
+                audio: false
+            };
+
+            // 特定のデバイスが指定されている場合
+            if (deviceId) {
+                constraints.video.deviceId = { exact: deviceId };
+            }
+
+            this.cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+            // カメラ用のvideo要素を作成
+            this.cameraVideo = document.createElement('video');
+            this.cameraVideo.srcObject = this.cameraStream;
+            this.cameraVideo.autoplay = true;
+            this.cameraVideo.muted = true;
+            this.cameraVideo.playsInline = true;
+            this.cameraVideo.crossOrigin = 'anonymous';
+
+            // カメラが読み込まれたら処理開始
+            this.cameraVideo.addEventListener('loadedmetadata', () => {
+                console.log('Camera loaded:', this.cameraVideo.videoWidth, 'x', this.cameraVideo.videoHeight);
+                
+                // キャンバスサイズを設定
+                this.setupCanvas(this.cameraVideo.videoWidth, this.cameraVideo.videoHeight);
+                
+                // カメラアニメーション開始
+                this.startCameraAnimation();
+                
+                this.isCameraActive = true;
+                this.isVideo = true;
+                
+                // ボタンの状態を更新
+                const cameraBtn = document.getElementById('cameraBtn');
+                if (cameraBtn) {
+                    cameraBtn.textContent = '📹 Stop Camera';
+                    cameraBtn.classList.add('active');
+                }
+                
+                // カメラの再生を確実に開始
+                this.cameraVideo.play().catch(error => {
+                    console.error('Failed to play camera video:', error);
+                });
+            });
+
+            // カメラの再生開始を待つ
+            this.cameraVideo.addEventListener('playing', () => {
+                console.log('Camera started playing');
+            });
+
+            // エラーハンドリング
+            this.cameraVideo.addEventListener('error', (error) => {
+                console.error('Camera video error:', error);
+            });
+
+        } catch (error) {
+            console.error('Camera access error:', error);
+            alert('カメラへのアクセスに失敗しました。ブラウザの設定でカメラを許可してください。');
+        }
+    }
+
+    // カメラ選択ダイアログを表示
+    async showCameraSelectionDialog() {
+        try {
+            // 利用可能なカメラを取得
+            const cameras = await this.getAvailableCameras();
+            
+            if (cameras.length === 0) {
+                // カメラが見つからない場合はデフォルトカメラを試行
+                await this.startCameraWithDevice();
+                return;
+            }
+
+            // カメラ選択ダイアログを作成
+            const dialog = document.createElement('div');
+            dialog.className = 'camera-dialog';
+            dialog.innerHTML = `
+                <div class="camera-dialog-content">
+                    <h3>カメラを選択</h3>
+                    <div class="camera-list">
+                        ${cameras.map((camera, index) => `
+                            <div class="camera-item" data-device-id="${camera.deviceId}">
+                                <div class="camera-icon">📹</div>
+                                <div class="camera-info">
+                                    <div class="camera-name">${camera.label || `カメラ ${index + 1}`}</div>
+                                    <div class="camera-id">${camera.deviceId.substring(0, 20)}...</div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div class="camera-dialog-buttons">
+                        <button class="btn btn-secondary" id="cancelCameraBtn">キャンセル</button>
+                    </div>
+                </div>
+            `;
+
+            // ダイアログを表示
+            document.body.appendChild(dialog);
+
+            // カメラ選択イベント
+            const cameraItems = dialog.querySelectorAll('.camera-item');
+            cameraItems.forEach(item => {
+                item.addEventListener('click', async () => {
+                    const deviceId = item.dataset.deviceId;
+                    dialog.remove();
+                    await this.startCameraWithDevice(deviceId);
+                });
+            });
+
+            // キャンセルボタン
+            dialog.querySelector('#cancelCameraBtn').addEventListener('click', () => {
+                dialog.remove();
+            });
+
+        } catch (error) {
+            console.error('Camera selection error:', error);
+            // エラーの場合はデフォルトカメラを試行
+            await this.startCameraWithDevice();
+        }
+    }
+
+    toggleCamera() {
+        if (this.isCameraActive) {
+            this.stopCamera();
+        } else {
+            this.startCamera();
+        }
+    }
+
+    // フルスクリーン機能
+    toggleFullscreen() {
+        const canvasContainer = document.querySelector('.canvas-container');
+        
+        if (!document.fullscreenElement && !document.webkitFullscreenElement && !document.msFullscreenElement) {
+            // フルスクリーンに入る
+            if (canvasContainer.requestFullscreen) {
+                canvasContainer.requestFullscreen();
+            } else if (canvasContainer.webkitRequestFullscreen) {
+                canvasContainer.webkitRequestFullscreen();
+            } else if (canvasContainer.msRequestFullscreen) {
+                canvasContainer.msRequestFullscreen();
+            }
+        } else {
+            // フルスクリーンを終了
+            if (document.exitFullscreen) {
+                document.exitFullscreen();
+            } else if (document.webkitExitFullscreen) {
+                document.webkitExitFullscreen();
+            } else if (document.msExitFullscreen) {
+                document.msExitFullscreen();
+            }
+        }
+    }
+
+    // フルスクリーン状態の変更を監視
+    handleFullscreenChange() {
+        const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
+        const fullscreenBtn = document.getElementById('fullscreenBtn');
+        const canvasContainer = document.querySelector('.canvas-container');
+        const fullscreenControls = document.getElementById('fullscreenControls');
+        
+        if (fullscreenBtn) {
+            if (isFullscreen) {
+                fullscreenBtn.textContent = '⛶';
+                fullscreenBtn.classList.add('active');
+                canvasContainer.classList.add('fullscreen');
+                
+                // フルスクリーン用コントロールUIを表示
+                if (fullscreenControls) {
+                    fullscreenControls.style.display = 'block';
+                    this.syncFullscreenControls();
+                }
+                
+                // フルスクリーン時にキャンバスサイズを調整
+                this.adjustCanvasForFullscreen();
+            } else {
+                fullscreenBtn.textContent = '⛶';
+                fullscreenBtn.classList.remove('active');
+                canvasContainer.classList.remove('fullscreen');
+                
+                // フルスクリーン用コントロールUIを非表示
+                if (fullscreenControls) {
+                    fullscreenControls.style.display = 'none';
+                }
+                
+                // フルスクリーン終了時にキャンバスサイズを元に戻す
+                this.restoreCanvasSize();
+            }
+        }
+    }
+
+    // フルスクリーン時にキャンバスサイズを調整
+    adjustCanvasForFullscreen() {
+        const canvas = this.outputCanvas;
+        const container = document.querySelector('.canvas-container.fullscreen');
+        
+        if (container && canvas) {
+            const containerWidth = container.clientWidth;
+            const containerHeight = container.clientHeight;
+            const aspectRatio = canvas.width / canvas.height;
+            
+            let newWidth, newHeight;
+            
+            if (aspectRatio > 1) {
+                // 横長
+                newWidth = containerWidth;
+                newHeight = newWidth / aspectRatio;
+                
+                if (newHeight > containerHeight) {
+                    newHeight = containerHeight;
+                    newWidth = newHeight * aspectRatio;
+                }
+            } else {
+                // 縦長
+                newHeight = containerHeight;
+                newWidth = newHeight * aspectRatio;
+                
+                if (newWidth > containerWidth) {
+                    newWidth = containerWidth;
+                    newHeight = newWidth / aspectRatio;
+                }
+            }
+            
+            canvas.style.width = newWidth + 'px';
+            canvas.style.height = newHeight + 'px';
+        }
+    }
+
+    // キャンバスサイズを元に戻す
+    restoreCanvasSize() {
+        const canvas = this.outputCanvas;
+        if (canvas) {
+            canvas.style.width = '';
+            canvas.style.height = '';
+        }
+    }
+
+    // フルスクリーン用コントロールUIのセットアップ
+    setupFullscreenControls() {
+        // フルスクリーン用コントロールの表示/非表示切り替え
+        const closeFullscreenBtn = document.getElementById('closeFullscreenBtn');
+        if (closeFullscreenBtn) {
+            closeFullscreenBtn.addEventListener('click', () => {
+                this.toggleFullscreen();
+            });
+        }
+
+        // フルスクリーン用スライダーのイベントリスナー
+        const fullscreenIntensity = document.getElementById('fullscreenIntensity');
+        const fullscreenStretchAmount = document.getElementById('fullscreenStretchAmount');
+        
+        if (fullscreenIntensity) {
+            fullscreenIntensity.addEventListener('input', (e) => {
+                const value = e.target.value;
+                document.getElementById('fullscreenIntensityValue').textContent = value;
+                
+                // メインのスライダーも同期
+                const mainIntensity = document.getElementById('intensity');
+                if (mainIntensity) {
+                    mainIntensity.value = value;
+                    document.getElementById('intensityValue').textContent = value;
+                }
+                
+                // エフェクトを適用
+                if (!this.isVideo || this.isCameraActive) {
+                    this.processFrame();
+                }
+            });
+        }
+
+        if (fullscreenStretchAmount) {
+            fullscreenStretchAmount.addEventListener('input', (e) => {
+                const value = e.target.value;
+                document.getElementById('fullscreenStretchAmountValue').textContent = value;
+                
+                // メインのスライダーも同期
+                const mainStretchAmount = document.getElementById('stretchAmount');
+                if (mainStretchAmount) {
+                    mainStretchAmount.value = value;
+                    document.getElementById('stretchAmountValue').textContent = value;
+                }
+                
+                // エフェクトを適用
+                if (!this.isVideo || this.isCameraActive) {
+                    this.processFrame();
+                }
+            });
+        }
+
+        // フルスクリーン用セレクトボックスのイベントリスナー
+        const fullscreenEffectType = document.getElementById('fullscreenEffectType');
+        const fullscreenDirection = document.getElementById('fullscreenDirection');
+        const fullscreenStretchType = document.getElementById('fullscreenStretchType');
+        
+        [fullscreenEffectType, fullscreenDirection, fullscreenStretchType].forEach(select => {
+            if (select) {
+                select.addEventListener('change', (e) => {
+                    const value = e.target.value;
+                    const mainSelect = document.getElementById(e.target.id.replace('fullscreen', '').toLowerCase());
+                    
+                    // メインのセレクトボックスも同期
+                    if (mainSelect) {
+                        mainSelect.value = value;
+                    }
+                    
+                    // エフェクトを適用
+                    if (!this.isVideo || this.isCameraActive) {
+                        this.processFrame();
+                    }
+                });
+            }
+        });
+    }
+
+    // フルスクリーン用コントロールの値を同期
+    syncFullscreenControls() {
+        const fullscreenIntensity = document.getElementById('fullscreenIntensity');
+        const fullscreenStretchAmount = document.getElementById('fullscreenStretchAmount');
+        const fullscreenEffectType = document.getElementById('fullscreenEffectType');
+        const fullscreenDirection = document.getElementById('fullscreenDirection');
+        const fullscreenStretchType = document.getElementById('fullscreenStretchType');
+        
+        // メインのコントロールから値を取得して同期
+        const mainIntensity = document.getElementById('intensity');
+        const mainStretchAmount = document.getElementById('stretchAmount');
+        const mainEffectType = document.getElementById('effectType');
+        const mainDirection = document.getElementById('direction');
+        const mainStretchType = document.getElementById('stretchType');
+        
+        if (fullscreenIntensity && mainIntensity) {
+            fullscreenIntensity.value = mainIntensity.value;
+            document.getElementById('fullscreenIntensityValue').textContent = mainIntensity.value;
+        }
+        
+        if (fullscreenStretchAmount && mainStretchAmount) {
+            fullscreenStretchAmount.value = mainStretchAmount.value;
+            document.getElementById('fullscreenStretchAmountValue').textContent = mainStretchAmount.value;
+        }
+        
+        if (fullscreenEffectType && mainEffectType) {
+            fullscreenEffectType.value = mainEffectType.value;
+        }
+        
+        if (fullscreenDirection && mainDirection) {
+            fullscreenDirection.value = mainDirection.value;
+        }
+        
+        if (fullscreenStretchType && mainStretchType) {
+            fullscreenStretchType.value = mainStretchType.value;
         }
     }
 
